@@ -1,0 +1,455 @@
+---
+title: "Applied Data Analysis in R"
+subtitle: "Practical 2: Importance"
+author: "Dave Hodgson & Matthew Silk"
+date: "Updated September 2020"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Importance
+
+Inference, and therefore statistical models, serve at least two purposes. First, they help us to predict the response variable for a given set of explanatory variables. For example, if we "know", based on a statistical model of extinction risk in mammals, that endangerment increases with increasing body mass, then what is the IUCN category of a newly discovered species of rodent that weighs 6g? A successful model will predict the IUCN category AND express our uncertainty in that prediction.
+
+Second, they help us to test hypotheses, allowing us to state with confidence that the response variable DEPENDS ON, or does not depend on, a predictor. For example we might simply want to find out whether endangerment depends on body mass, or not.
+
+The predictive power of a model, and the importance of the predictors in that model, are related but not synonymous. Determination, i.e. the amount of noise that is explained by the predictors, will always increase with increasing numbers of predictors. This will also increase predictive power. However, most predictors will explain only a tiny fraction of the noise, and hence are "not worth measuring" and "not worth being interested in".
+
+The principle of parsimony dictates that we should trim away any predictors that fail to explain an important amount of noise. When the Cornish Piskies tried to work out why the tide rises and falls, they ended up with all sorts of possible predictors. Direction of the wind? Temperature? Number of piskies swimming in the water? They did their own survey of possible explanations and discovered that they could reject ALL of the explanations apart from one, the most important one, the one that explained all of the noise. It was the enourmous ball of cheese in the sky that made the tide rise and fall.
+
+In this practical we will explore the various methods used to explore the Determination, Significance, Information Loss and Credibility of hypothese and parameters, and we will associate them with the Statistical Engines we discovered in Practical 1. As a spoiler, here is a summary of what we will discover.
+
+###Engine: By Eye
+**Determination** Does it look like the data are tightly clustered around a causative relationship?
+
+**Importance** Does it look like there exists a relationship between y and x?
+
+Hopefully at this point you are ready to accept a couple of issues around the "By Eye" statistical engine:
+  1. We should always use our eyes and our brains to decide whether a statistical model LOOKS LIKE a good representation of what the data tell us. This is why we draw figures in research papers. The best statistical models are usually the graphically convincing ones.
+  2. We cannot completely rely on our eyes, because our eyes and our brains are biased, and it is too easy to lie using graphics. This is why scientific disciplines usually rely on the "proper" analysis of objective evidence, for the testing of hypotheses and the prediction of responses.
+  
+###Engine: Ordinary Least Squares
+
+**Determination**: Measure the proportion of noise that is explained by the model, using (Model Sum of Squares)/(Total Sum of Squares)
+
+**Predictive Power**: Use the assumption of Normally distributed residuals to create 95% prediction intervals for new values of the explanatory variables.
+
+**Confidence in Parameters**: Use assumption of normality of residuals to infer 95% confidence interval for each parameter.
+
+**Confidence in parameters (Permutation)**: shuffle the data to simulate the null hypothesis a bgjillion times, and ask whether the observed parameter lies in either extreme of the resulting distribution of outcomes.
+
+**Confidence in Parameters (Bootstrapping)**: resample the data with replacement, a bgjillion times, to simulate many instances of reality, and ask whether the null hypothesis lies at either extreme of this distribution of outcomes.
+
+**Significance**: use a set of assumptions (normality of residuals, homogeneity of variance, independence of residuals, random sampling, relevance of the model) to allow the use of a statistical test that compares the amount of noise explained to the amount of noise left over. For OLS simple linear regression with Normal residuals, this is an F-test. A limitation here is that the F-test can only be used to compare nested sets of models, i.e. with versus without a set of predictors. This is because one rival model must use fewer degrees of freedom than the other.
+
+###Engine: Maximum Likelihood
+
+**Information Loss**: use a set of assumptions to ask whether a given hypothesis (set of predictors) is more or less informative than rival hypotheses. This is for Maximum Likelihood models, and uses differences in the Akaike Information Criterion for rival models. A pragmatic benefit of this is that the models need not differ in the number of degrees of freedom used by predictors.
+
+###Engine: Bayesian & MCMC
+
+**Credibility of Parameters** Bayesian models provide posterior distributions of parameters, with associated credible intervals. These can be used to ask whether a parameter value of zero (i.e. the null hypothesis) lies outside the 95% credible interval. If it does, then the parameter is credibly non-zero.
+
+##Getting started: Simulate data and set-up
+```{r warning=FALSE, message=FALSE}
+
+library(nimble)
+library(coda)
+#library(brms)
+library(boot)
+library(bbmle)   ##this has tyhe function mle2 in it, which does the heavy lifting
+beta0<-1
+beta1<-0.5
+std.dev<-0.3
+n<-10
+#Draw n samples from a uniform distribution defined by its limits, zero and three
+x<-runif(n,0,3)
+#Calculate the response variable for each value of x, based on a linear relationship. Draw n samples from a Normal distribution with mean zero and simulated standard deviation, and add these values to the linear relationship to represent "noise".
+y<-beta0+beta1*x+rnorm(n,0,std.dev)
+#Plot the relationship between y and x. Because y is a continuous variable, and so is x, the default plot is a scatterplot. We start with an empty set of axes (type="n"), and then add the data separately, giving us finer control of the plot's appearance. To see more detail on the subcommands, type ?par and look through the options.
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+
+#having created an empty set of axes, add the points. Again, see ?par to understand the subcommands.
+points(y~x,pch=16,cex=2)
+```
+
+##Determination
+###By Eye
+```{r warning=FALSE, message=FALSE}
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+
+#having created an empty set of axes, add the points. Again, see ?par to understand the subcommands.
+points(y~x,pch=16,cex=2)
+# then, decide for yourself what the intercept and slope might be, and add a fitted line with those choices
+beta0.eye<-1
+beta1.eye<-0.5
+abline(beta0.eye,beta1.eye)
+```
+
+Does that look any good? Goes through the data? Explains all the noise? ETc...we don't really have any numerical evidence to support our claim, but the model at least has to look convincing.
+
+##Determination
+###Ordinary Least Squares
+####R-squared: what proportion of the total noise is explained by the model?
+
+```{r warning=FALSE, message=FALSE}
+m1<-lm(y~x)
+summary(m1)
+#total noise. This is the sum of the squared distances from the datapoints to the overall mean
+SStotal<-sum((y-mean(y))^2)
+#residual noise. This is the sum of the squared distances from the datapoints to the fitted line
+SSresidual<-sum((y-(coef(m1)[1]+coef(m1)[2]*x))^2)
+#noise explained by the model. This is the difference between total noise and residual noise
+SSmodel<-SStotal-SSresidual
+#proportion explained
+R2<-SSmodel/SStotal
+print(R2)
+```
+
+###Predictive Power
+We would like our statistical model to be able to predict the response variable for "new" observations, where all we know is the set of explanatory variables. The `lm(y~x)` function does this, by applying a formula based on the Normal distribution. You can find lots of information here https://en.wikipedia.org/wiki/Prediction_interval, but we can use R to do the hard work for us. Here we create a fake sequence of children per household, and for each fake value we infer a prediction interval for number of pet hedgehogs. We plot this as a "95% Prediction Envelope" to show us the uncertainty in our predictions.
+
+```{r warning=FALSE, message=FALSE}
+plot(y~x,type="n",xlim=c(0,10),ylim=c(0,20))
+points(y~x,pch=16,cex=1.5)
+#fit the interesting model
+m1<-lm(y~x)
+#fit the null model. Here, y~1 means "fit only the intercept"...without a slope, the intercept will be the overall mean of y
+m0<-lm(y~1)
+#create a fake version of x, stretching from zero to ten, at 100 equal intervals
+fake.x<-seq(0,10,length.out=101)
+#and use the predict function to work out fitted values at each value of fake.x, with prediction intervals
+dd<-predict(m1,list(x=fake.x),interval="predict")
+#add these prediction intervals as a polygon
+polygon(c(fake.x,rev(fake.x)),c(dd[,2],rev(dd[,3])),col=rgb(1,0,0,0.5), border=NA)
+
+
+```
+
+###Confidence in Parameters###
+As above, we can use an assumption of Normal distribution of residuals to create 95% confidence intervals for our intercept and slope.
+
+```{r warning=FALSE, message=FALSE}
+confint(m1)
+```
+
+It's possible to make a claim about importance of the linear model here: if "zero" lies **outside** the bounds of the 95% Confidence Interval, then we can claim that the data was very unlikely to have been sampled if the null hypothesis is true. This would yield support for the alternative hypothesis, i.e. a linear relationship between y and x. [although this conclusion will require us to check our assumptions and goodness of fit]
+
+**Confidence in parameters (Permutation)**
+Here we shuffle the response variable a bgjillion times, to simulate the null hypothesis a bgjillion times, and ask whether the inference, using the observed data, lies outside the distribution of outcomes.
+
+```{r warning=FALSE, message=FALSE}
+#set the number of permutations
+perms<-10000
+#set up an empty vector that will hold the results of the permutations
+slope.shuffle<-numeric(perms)
+#loop through the permutations
+for(i in 1:perms){
+  #each permutation, shuffle the response variable to break any link with the explanatory variable. SHuffling is the same as sampling without replacement. Get the coefficients of the l;inear regression of shuffled Y against X
+slope.shuffle[i]<-coef(lm(sample(y,replace=F)~x))[2]
+}
+#draw a histogram of the slopes of the shuffled regressions
+hist(slope.shuffle,xlim=c(-1.5,1.5))
+#and point out where the ACTUAL slope lies in this null distribution
+arrows(coef(m1)[2],600,coef(m1)[2],200,code=2,length=0.1)
+text(coef(m1)[2],650,"observed")
+
+```
+
+We can turn this permutation approach into a statement of importance, by asking what proportion of permutations (simulations of the null hypothesis) yielded a linear slope that was as strong, or stronger, than the observed signal.
+
+```{r warning=FALSE, message=FALSE}
+# in words, subset the slope.shuffle vector to be just those whose values are at least as large as the observed slope, ask how many permutations achieved this criterion, and divide this number by the number of permutations
+length(slope.shuffle[slope.shuffle>=coef(m1)[2]])/length(slope.shuffle)
+```
+
+Check that you understand what this number means.
+
+**Confidence in parameters (Bootstrapping)**
+Bootstrapping is a classic "nonparametric" statistical tool, so called because it makes no assumptions about the distribution of the data or the residuals from the model. The guiding principle is that the only information we have about our "system" is the data itself. The only assumption we need to make is that the data were sampled randomly, therefore each measurement was equally likely to be made. We can "recreate" the sample a bgjillion times by sampling from the rows of data WITH REPLACEMENT. This means that each observation can happen multiple times in a bootstrapped dataset. Each bootstrap sample has an equal probability of happening, but each different bootstrap sample yields a different inference for the parameters. We use the variation among bootstrap samples to help us understand the natural uncertainty in our inference.
+
+```{r warning=FALSE, message=FALSE}
+#how many bootstrap samples?
+boots<-10000
+#set up empty vector to contain the slopes of each bootstrap
+slope.boot<-numeric(boots)
+#loop through the bootstraps
+for(i in 1:boots){
+  #this time, sample the dataset WITH REPLACEMENT. This means each row of data can appear several times. The trick we play here is to sample numbers from 1 to 30, and in the next line of code we use those numbers to tell us which ROWS of data to consider in our regression. An alternative would be to create a new dataframe containing boostrapped y and bootstrapped x. It's essential to retain the association between x and y.
+booty<-sample(n,replace=T)
+#use the sample in booty to regress the bootstrapped y against the bootstrapped x
+slope.boot[i]<-coef(lm(y[booty]~x[booty]))[2]
+}
+hist(slope.boot,xlim=c(-0.5,2.5))
+arrows(0,600,0,200,code=2,length=0.1)
+text(0,650,"H0")
+```
+
+We can turn this bootstrapping approach into a statement of importance, by asking what proportion of bootstraps (simulations of the alternative hypothesis) yielded a linear slope that was zero or on the wrong side of zero.
+
+```{r warning=FALSE, message=FALSE}
+length(slope.boot[slope.boot<=0])/length(slope.boot)
+```
+
+Check that you understand what this number means.
+
+**ADVANCED TOPIC Confidence in parameters (Bayesian Bootstrapping)**
+It turns out that the classic "bootstrap" is in fact a special case of a wider set of possible bootstrap sampling schemes. The classic scheme allows each observation to share the same probability of being sampled. The Bayesian Bootstrap is called this because it allows us to bring "prior" wisdom into the sampling scheme. Maybe we'd like to favour certain observations? Maybe we'd like to introduce some uncertainty into whether observations should be included or excluded, and with what probability?
+
+The Bayesian Bootstrap is pretty new to research in the life and environmental sciences, but there exist some important applications, particularly when data are not independent. For now, we introduce the concept and apply it to the simple linear regression.
+
+The Dirichlet distribution is a special probability distribution function that breaks the line between zero and one into n pieces of random length. The sum of the lengths must be 1. Picture this as a set of probabilities of sampling each of the observed datapoints. We can take a single draw from the Dirichlet distribution, and use that to resample our data with replacement. Then repeat a bgjillion times.
+
+A simple approach to this is to use Dirichlet draws to "weight" the importance of each datapoint in a `lm(y~x)` model, as follows:
+
+```{r warning=FALSE, message=FALSE}
+#Importance - Bayesian bootstrap
+bboots<-10000
+slope.bboot<-numeric(bboots)
+for(i in 1:bboots){
+###to draw from a Dirichlet distribution, draw from an exponential distribution then divide each draw by the sum of the draws. This creates an uninformative and symmetrical Dirichlet sample.
+bbooty<-rexp(n,1)
+bbooty<-bbooty/sum(bbooty)
+#now for each Dirichlet sample, perform a WEIGHTED regression of y against x. The weighting means that some rows of data have less influence on the analysis than others
+slope.bboot[i]<-coef(lm(y~x,weights=bbooty))[2]
+}
+hist(slope.bboot)
+p.bboot<-length(slope.bboot[slope.bboot<0])/length(slope.bboot)
+p.bboot
+```
+
+Does this give a similar measure of importance to the first bootstrap analysis?
+
+###Significance###
+If we couple our Ordinary Least Squares engine with the frequentist's Significance toolbox, then we can ask whether the alternative hypothesis (a linear relationship between y and x) is a significantly better explanation of reality than the null hypothesis (no linear relationship between y and x). We have to make a handful of assumptions:
+
+  1. The residuals of the model are Normally distributed.
+  2. All residuals share the same variance.
+  3. The residuals are independent of one another.
+  4. Data has been sampled at random and without bias.
+  5. The linear model is relevant.
+
+We will attempt to validate these assumptions in the "Goodness of Fit" practical. For now, assume they are valid. If valid, then accept this summary of some very clever mathematical statistics:
+
+"The ratio of the variance explained by the model, to the variance not explained by the model, is F-distributed with df1 and df2 degrees of freedom". 
+
+df1 is the number of degrees of freedom required to fit the model, compared to the rival null hypothesis. For linear regression, we infer beta0 and beta1. For the null hypothesis, we infer only the population mean. So, df1=1 (=2-1). df2 is the residual degrees of freedom, which is the number of observations (sample size, n), minus the number of parameters being inferred (beta0 and beta1), hence n-2.
+
+We can then use theory or R to find out what proportion of the F-distribution is at least as big as this F-statistic. This is called the P-value. If the F-statistic lies in the top 5% of possible values, then we claim significance. The correct definition here is: "if we repeat this experiment or survey a bgjillion times and the null hypothesis is true, then the probability of finding a linear relationship this strong, or even stronger, is P". That's a pretty weird statement...significance is judged when a statistical outcome is sufficiently unlikely if the signal doesn't actually exist.
+
+First we do this using a calculator on the residuals of the models, which are contained in a sub-object that can be accessed using the $ symbol
+
+```{r warning=FALSE, message=FALSE}
+m1<-lm(y~x)
+m0<-lm(y~1)
+ResidSS1<-sum(m1$residuals^2) 
+ResidSS0<-sum(m0$residuals^2)
+dfmodel<-1 #degrees of freedom for the model.
+n<-length(y) #number of observations
+dfresid<-n-dfmodel-1
+#calculate the F value as a ratio of the two variances
+F<-((ResidSS0-ResidSS1)/dfmodel)/(ResidSS1/(dfresid))
+# and the pf function calculates what fraction of the F-distribution lies below this value of F. Subtract this from 1 to get the fraction of the F-distribution that lies ABOVE...this is your p-value
+pF<-1-pf(F, dfmodel, dfresid)
+print(pF)
+```
+
+OK so we've just worked out the P-value "by hand" using the variances. We can also use R's algorithms to make it easier. R uses the `anova()` command to compare models, which is unfortunate because this is not always synonymous with the famous "Analysis of Variance". But that's a historical accident.
+
+```{r warning=FALSE, message=FALSE}
+m1<-lm(y~x)
+m0<-lm(y~1)
+anova(m1,m0,test="F")
+```
+
+We must now piece together these bits of information to make our statement of significance or non-significance. Make sure you can find these bits of information in the output. 
+
+If P<0.05, then use the following statement: 
+
+"y increases linearly and significantly with increasing x (F$_{1,8}$ = `round(F,3)`, P = `round(pF,3)`; Figure 1)"
+
+If P>=0.05, we state:
+
+"We found no significant evidence that y increases linearly with increasing x (F$_{1,8}$ = `round(F,3)`, P = `round(pF,3)`; Figure 1)"
+
+##Engine: Maximum Likelihood##
+In the "Statistical Engines" practical we showed you how to use the `bbmle2` package to maximise the likelihood function for your statistical model. This package and its functions are excellent for models that do not fit the framework of linear modelling, but they are tricky to code for beginners. The good news is that, for most linear modelling situations, `lm(y~x)` and, later, glm(y~x), lmer(y~x,...) and gls(y~x,...) will also provide sensible estimates of the information content of your linear model.
+
+We start with a reminder of the bbmle method...see Practical 1 for annotation.
+
+```{r warning=FALSE, message=FALSE}
+#Likelihood ratio test
+log.likelihood<-function(b0,b1,sigma){
+  if(sigma < 0) {deviance <- 10000000}
+  if(sigma > 0) {
+    likelihoods <- dnorm(y, mean = b0+b1*x,
+                         sd=sigma)
+    log.likelihoods<-log(likelihoods)
+    deviance<- -2 * sum(log.likelihoods)
+  }
+  return(deviance)
+}
+m1.ML <- mle2(log.likelihood, start = list(b0 = 0.5, b1 = 0.5, sigma=1))
+
+log.likelihood0<-function(b0,sigma){
+  if(sigma < 0) {deviance <- 10000000}
+  if(sigma > 0) {
+    likelihoods <- dnorm(y, mean = b0,
+                         sd=sigma)
+    log.likelihoods<-log(likelihoods)
+    deviance<- -2 * sum(log.likelihoods)
+  }
+  return(deviance)
+}
+m0.ML<- mle2(log.likelihood0, start = list(b0 = 0.5, sigma=1))
+summary(m1.ML)
+coef(m1.ML)
+```
+
+###Significance via Maximum Likelihood
+```{r warning=FALSE, message=FALSE}
+anova(m1.ML,m0.ML)
+```
+
+###Information Loss###
+The information theorist uses the Akaike Information Criterion to judge whether the most informative of a set of rival models is "much" more informative than the others. The AKaike Information Criterion uses the log-likelihood of a model, but "penalises" it by adding the number of parameters required by the model. The AIC of a single model is not much use because it is not measured in useful units of information. However it's extremely useful when we compare AIC among models: wee seek the best one (the best model has the lowest AIC) and then we study the difference between the best model's AIC and the AIC of the rivals. Internet searches, and a browse of the literature, will reveal that different researchers use different thresholds for the importance of the best model. A decent rule of thumb is that information loss gets interesting when delta-AIC (the difference between the AIC of the best model and the AIC of a rival model) is greater than 2 units.
+
+```{r warning=FALSE, message=FALSE}
+#Akaike Information Criterion
+#Model 1 - 3 parameters (intercept, slope, residual variance)
+k1<-3
+LL1<-logLik(m1.ML)
+AIC1 <- as.numeric(-2*LL1+2*k1)
+#Null mod - k=2 (intercept, residual variance)
+k0<-2
+LL0<-logLik(m0.ML)
+AIC0 <- as.numeric(-2*LL0+2*k0)
+
+AIC1
+AIC0
+#the raw values of AIC are not particularly interesting. More interesting is the DIFFERENCE in AIC between two models.
+deltaAIC<-AIC1-AIC0
+deltaAIC
+```
+
+AIC makes some assumptions, including that the dataset is large enough to claim "asymptotic properties". In reality we often work with small datasets, therefore we should correct the AIC for this, and convert it to AICc.
+
+```{r warning=FALSE, message=FALSE}
+##AICc is AIC corrected for small sample size
+##Calculated by adding (2k^2+2k)/(n-k-1) to the AIC value
+AICc1<-AIC1+(2*k1^2+2*k1)/(n-k1-1)
+AICc0<-AIC0+(2*k0^2+2*k0)/(n-k0-1)
+deltaAICc<-AICc1-AICc0
+deltaAICc
+```
+
+After all that coding, it's perhaps reassuring to note that the same tests for significance or loss of information can be achieved using the `lm(y~x)` framework. We can perform a "likelihood ratio test" (the test statistic is approximately Chi-square distributed).
+
+```{r warning=FALSE, message=FALSE}
+m1<-lm(y~x)
+m0<-lm(y~1)
+anova(m1,m0,test="LRT")
+```
+
+Or, we can calculate the AIC of rival models and consider the loss of information for the inferior model.
+
+```{r warning=FALSE, message=FALSE}
+AIC1<-AIC(m1)
+AIC0<-AIC(m0)
+deltaAIC<-AIC1-AIC0
+deltaAIC
+```
+
+Finally, we introduce you to an increasingly popular method for information theorists. A major advantage of using information theory in statistical modelling is that rival models can be compared to each other as a batch...rather than the usual frequentist approach of comparing pairs of models, where one is always simpler than the other. In information theory, models do not need to vary in the number of parameters inferred or the degrees of freedom. The only restriction is that all models must be fitted to the same response variable.
+
+Models can be ranked in terms of their information content. The best model (with lowest AIC) sits at the top of this ranked list. All rival models are ranked lower, according to increasing delta-AIC. All rival models are "possible" inferences, but they should contribute less information to our inference as they become increasingly far from the most informative model. 
+
+This idea has been adopted into a framework called "model averaging", which is especially well-suited to the modelling of vague hypotheses and when there are many possible predictors of the response variable. We'll return to this utility later, but introduce it here for the simple linear regression. In simple linear regression, there are only two possible models: the null hypothesis (y~1) and the alternative hypothesis (y~x). One of these mdoels will be more informative (have lower AIC) than the other. Our inference of the parameters of the regression can be averaged between the parameters of these two rival models, but weighted by how informative the models are. The most informative model contributes most to the model-averaged slope, but the inferior rival also contributes (just less, and a lot less if delta-AIC is large).
+
+Our task is to create model-averaged 95% confidence intervals for the intercept and slope of the linear regression between y and x. We use R packagae `MuMIn` and its `dredge` function. This tries out all possible models available (here, just `y~x` and `y~1`); calculates their AIC, ranks the models, weights them according to relative information content, averages their parameters and produces confidence intervals.
+
+```{r warning=FALSE, message=FALSE}
+#model averaging and confidence intervals
+# first, load the library MuMIn that does model averaging
+library(MuMIn)
+#create the interesting model, with inclusion of the "na.fail" subcommand, which prevents a meltdown if your data includes NA (missing) data
+m1<-lm(y~x,na.action="na.fail")
+#then dredge this model. dredge will create all possible subset models of your original model. In this case, there is only one subset, which is an empty model y~1
+dredge.m1<-dredge(m1)
+#check the results. You should see a set of models and their fits
+dredge.m1
+#now use the model-avetraging function to get "average" values of intercept and slope across all possible models, weighetd  y the information content of each model
+coeff<-model.avg(dredge.m1,subset=delta<20)
+#extract the averaged parameter values
+modav.betas<-coefTable(coeff)
+#and their averaged confidence intervals
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+```
+
+We can use these confidence intervals to make statements about whether the data informs us that the true slope is different from zero. Basically, if the model-averaged 95% confidence interval for a parameter DOES NOT SPAN ZERO, then we can be confident that zero is an unlikely value for that parameter.
+
+##Engine: Bayesian & MCMC##
+###Credibility
+Recall that the Bayesian model, using MCMC chains, yields a posterior distribution of the parameters of our model. A true Bayesian simply uses this posterior distribution as a statement of "importance" or "truth". But, in a slightly uncomfortable hybrid approach, the pragmatic modeller can also use the posterior distribution to ask how much of the posterior distribution lies on the "wrong" side of the null hypothesis. In other words (for our example), what proportion of the posterior distribution of slopes lies at or below zero? If the inferred slope was negative, or if our starting hypothesis suggested a negative slope, we would instead ask what proportion of the posterior distribution of slopes lies at or above zero. These are one-sided hypothesis tests.
+
+```{r warning=FALSE, message=FALSE}
+code <- nimbleCode({
+  # Likelihood
+  #loop through the datapoints
+  for(i in 1:n){
+    #each datum is a draw from a Normal distribution with expected value mu and precision inv.var
+    y[i] ~ dnorm(mu[i], inv.var)
+    #the expected value is determined by an intercept, a slope and the value of the explanatory variable (a linear model)
+    mu[i] <- beta0 + beta1 * x[i]
+  }
+  
+  # Priors for parameters
+  # we provide (effectively) no information about the intercept and slope, hence very broad, flat Normal distributions
+  beta0 ~ dnorm(0, 0.0001)
+  beta1 ~ dnorm(0, 0.0001)
+  #precision is the inverse of the square of the residual standard deviation
+  inv.var <- 1 / (sigma * sigma)
+  #and we claim that the residual std dev lies somewhere between zero and twenty. If it turns out to be bigger than 20, the inference will not find it, so the Uniform distribution is a bit risky. However our prior distribution for the std deviation  MUST NOT allow negative values, or we will break everything. 
+  sigma ~ dunif(0, 20)
+})
+
+consts <- list(n = n)
+
+data <- list(y = y, x = x)
+
+inits <- list(beta0 = rnorm(1),
+              beta1 = rnorm(1),
+              sigma = runif(1))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta0", "beta1", "sigma"))
+
+mcmc.out$summary
+
+plot(mcmc.out$samples)
+
+```
+
+This output already contains a lot of what we need, but in order to work out a Bayesian p-value for the slope parameter, we have to work with ALL of the posterior samples from the MCMC chain. Depending on the number of iterations, the burn-in period and the thinnning interval, we have potentially many thousands of possible values of beta0, beta1 and sigma to work with.
+
+```{r warning=FALSE, message=FALSE}
+#make the posterior coda chains available for analysis
+m1.MCMC.mat <- as.matrix(mcmc.out$samples)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+
+p.MCMC <- length(m1.MCMC.dat$beta1[m1.MCMC.dat$beta1 <= 0]) / length(m1.MCMC.dat$beta1)
+print(round(p.MCMC,5))
+```
+
+This final output is the probability that the inferred slope is less than or equal to zero, according to the MCMC algorithm. It is an expression of the credibility of the statement "the slope is not positive". This resembles a typical frequentist p-value. We might turn this into a more positive statement of the "probability that the slope is positive". See if you can figure out this small adjustment of the code.
+
+And, congratulations on getting this far!

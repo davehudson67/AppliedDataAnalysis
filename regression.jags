@@ -1,0 +1,15 @@
+
+      model {
+      # Likelihood
+      for(i in 1:n){
+      y[i]   ~ dnorm(mu[i],inv.var)
+      mu[i] <- beta0 + beta1*x[i]
+      }
+      
+      # Priors for parameters
+      beta0~dnorm(0,0.0001)
+      beta1~dunif(0,100)
+      inv.var   <- 1/(sigma*sigma)
+      sigma     ~ dunif(0,20)
+      }
+      

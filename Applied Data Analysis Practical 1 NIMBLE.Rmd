@@ -1,0 +1,608 @@
+---
+title: "Applied Data Analysis in R"
+subtitle: "Practical 1: Introduction, Regression and Statistical Engines"
+author: "Dave Hodgson & Matthew Silk"
+date: "16 June 2018"
+output:
+  html_document:
+    code_folding: hide
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Cornish Piskies
+Before humans arrived on the Cornish peninsula, it was colonised by a race of mythological folk, the piskies. Piskies are small and secretive, but share several traits with Cornish humans. They mine for minerals, they fish, they farm, and they smuggle. They aggregate in villages. They have strong traditions of folklore, festivals (often involving the drinking of ale), music and storytelling. They are subject to the pressures of natural and sexual selection, and also evolve culturally. A mytho-ecological survey was conducted by the authors, to help understand the complex relationships between phenotypic, cultural, environmental and geographic traits of piskies, both individually and at the scale of Pisky villages. The datasets we describe in these workshops will be relevant to this mytho-ecological survey. We will also rely on simulations of imaginary data.  
+<center>
+
+![Figure 1: Cornwall, an underlying random field, and the positions of 60 Pisky villages](pisky villages.PNG)
+
+</center>
+
+```{r warning=F, message=F}
+
+library(nimble)
+library(coda)
+#library(brms)
+library(boot)
+library(bbmle)   ##this has mle2 in
+```
+
+##Applied Data Analysis
+Welcome to the wonderful world of statistical modelling! Some people react to "statistics" and "R" with terror and trepidation; others enjoy statistical concepts but not coding; others enjoy both and relish the challenge. The aim of this course is to remove (or at least minimise) the fear; provide skills in hypothesis generation, data handling, data analysis and coding; and challenge you to use the right statistical tools in the right way to ANSWER SCIENTIFIC QUESTIONS. Questions and hypotheses rule the roost here. The analyses are simply tools to make sure the answers are credible. The code is simply a recipe to get you from question to answer.
+
+We are proponents of open data, open analysis, reproducibility, and open-source, free software. The lectures and workshops we have written are freely available and can be distributed freely. Our identities, however, belong to us and should not be claimed by other people.
+
+Statistical analysis is hard to learn unless you care about the data, questions and hypotheses. As part of this module you should reflect on all of the research projects you have been involved with to date, think about the hypotheses and the analyses you used to test them. You might also return to those datasets and questions, and re-perform your own analyses. These workshops are written using an artificial example dataset, or using data that you will simulate yourself. We have tried to make the data and questions as engaging as possible, but in general you will engage best when asking your own questions and analysing your own data. The workshops are self-contained but your challenge is to translate the methods and the code to apply to your own data and your own questions.
+
+Part of the challenge of Applied Data Analysis is to learn the language of statistics and the language of coding. Lectures for this module contain short glossaries, and we've added a glossary to the end of this Markdown file. This will help you to understand conversations about data analysis, and will help you to pose questions, either to your tutors, internet search engines, or the global community of R-users who like to help. This glossary will grow, and you can contribute to it. If you are trying to postpone the actual doing of R, then the glossary is a nice place to procrastinate.
+
+##How to use the workshop notes
+This workshop is presented either as a markdown file (.Rmd), or as the file produced when we "knit" the markdown into a document (html or pdf or Word). We have set this up to be optimised for html, such that the "code blocks" are hidden by default but can be revealed with a mouse click. We have explained the code in the main text, or annotated it using hashtags in the code blocks (R does not evaluate any hashed-out lines). Markdown is a fantastic way to present reproducible code and results. However, just "reading" code and explanation is only part of the learning process. It's important that students write and adapt the code themselves, so that mistakes can be made and learned from. Hence, our recommendation is that the code blocks be transcribed into new code files, either in RStudio or in R's default Graphical User Interface. Try to avoid simply copy-and-pasting the code...that will make no mistakes and you will learn less. The amount of explanation and annotation will decrease as the workshops progress. We recommend that students use all available resources to help them understand the code, the analyses and the graphics. Several books are available (discuss their usefulness with the lecturers and the demonstrators). But note that the real value of R is that it is FREE and OPEN SOURCE. You can find out almost anything you need to know by searching online.   Other users of R have almost certainly experienced the same problems as you, have asked questions on R forums, and have shared solutions.
+
+## Simulate a dataset to analyse
+Imagine pisky villages. In each village, the average number of pisky children per family varies between zero and three. Now, imagine that the average number of children per family per village (x) influences the average number of pet hedgehogs per pisky family per village (y). Imagine further that the truth of this signal is a linear relationship, with an intercept (beta0), a slope (beta1), and some natural uncertainty or variation, described by a standard deviation. In the absence of actual evidence for any of this, we can use R to imagine it for us. We can then use R to infer the true relationship between hedgehogs and children, based on the outcome of a random sample of ten pisky villages. You might choose to replace this pair of response and explanatory variables with an example closer to your own field of research.
+
+###Object-Oriented Coding
+
+R is an object-oriented programming language. This means that the coder creates objects, and into those objects the coder places information, in the form of numbers, text, vectors, arrays, matrices, functions, lists, dataframes, statistical models...pretty much anything you can think of. For our example we imagine an intercept (the expected number of pet hedgehogs in families of no children; put it in the object "beta0"), a slope (the increase in the mean number of pet hedgehogs for every unit increase in mean number of pisky children; "beta1"), a standard deviation (representing noise or uncertainty among villages; call it "std.dev") and, finally, a sample size of ten pisky villages. We store these initial values in objects because we might want to change them later...it's easier to change them in one place (the object) than in all the lines of code where these parameters are used. When choosing names for the objects, the coder should be careful to make them (a) short; (b) memorable; (c) relevant; (d) devoid of spaces or punctuation except "." and "_"; (e) not the same as any of the base R functions. If in doubt about (e), either check first using ?name_you_want, or start the object's name with a capital letter and it should be ok.
+
+```{r}
+
+beta0<-1
+beta1<-0.5
+std.dev<-0.3
+n<-10
+```
+
+###Simulate Data
+This is one of the most important skills you can learn. You can simulate data as if they have been sampled, at random, from a fantastic collection of probability distribution functions [see the Glossary]. In our example, we sample the average family size of each village as if all average family sizes between zero and three were equally likely. This is the same as drawing ten samples from a Uniform distribution (so-called because the probability of every outcome is uniform across the specified range) between zero and three.
+
+Then, we simulate the average number of pet hedgehogs per family, in each village, by drawing ten samples from a Normal distribution whose standard deviation has been imagined. The clever trick here is that the mean of each draw is the solution of the linear relationship between y and x. 
+
+Here we introduce a crucial part of R's language: the "function". Experienced coders will write their own functions. All of R's libraries rely on the set of functions defined in the "base" language. Functions act on objects, and change them according to a set of subcommands. Objects can be created to store the outcome of applying functions to other objects. R will use the default setting for all available subcommands, UNLESS the coder sets new values or options for them. If you ever want to know what subcommands can be changed, then check the help file for the function using `?function_name`
+
+```{r}
+#Draw n samples from a uniform distribution defined by its limits, zero and three
+x<-runif(n,0,3)
+#Calculate the response variable for each value of x, based on a linear relationship. Draw n samples from a Normal distribution with mean zero and simulated standard deviation, and add these values to the linear relationship to represent "noise".
+y<-beta0+beta1*x+rnorm(n,0,std.dev)
+#Plot the relationship between y and x. Because y is a continuous variable, and so is x, the default plot is a scatterplot. We start with an empty set of axes (type="n"), and then add the data separately, giving us finer control of the plot's appearance. To see more detail on the subcommands, type ?par and look through the options.
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+#having created an empty set of axes, add the points. Again, see ?par to understand the subcommands.
+points(y~x,pch=16,cex=2)
+
+```
+
+Figure 2: Scatterplot of y against x, where y is the average number of pet hedgehogs per family, and x is the average number of pisky children per family, measured in each of ten pisky villages.
+
+Now we can explore, graphically, what happens when we fit a linear regression model to our sample. The following code chunks recreate the plots used in the lecture slides for this module. First, we use the base function 'lm(y~x)' to fit an ordinary least squares regression line. Store the results of this model in an object (call it "m1" as shorthand for "model 1"). We then create a fake version of the explanatory variable, ranging between the smallest and largest value of x, and use the `predict` function to predict the value of y for each of the fake values of x. Then use the `lines` command to add this line of best fit. 
+
+```{r}
+#plot y against x, limiting the x-axis to 0 and 3, and limiting the y-axis between 0.5 and 3. Double the default size of the axis labels
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+#replace the points with solid circles, doubling the default size to make them large
+points(y~x,pch=16,cex=2)
+#fit a linear regression model y~x and store the results in an object called m1
+m1<-lm(y~x)
+#to add the fitted line, create a fake version of x that assumes 31 values spaced equally between 0 and 3
+fake.x<-seq(0,3,length.out=31)
+#use the linear regression model to predict values of y for each of the fake values of x, and store them in a vectyor called pred.y
+pred.y<-predict(m1,list(x=fake.x))
+#add these predicted values to the plot, as a line. Increase the default line width and colour it red
+lines(pred.y~fake.x,lwd=3,col="red")
+```
+
+Figure 3: Ordinary least squares regression line fitted to the relationship between y and x.
+
+Ordinary least squares regression finds the line of best fit that minimises the sum of the squared residuals. This next plot shows what we mean by residuals.
+
+```{r}
+#repeat the previous plotting code
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+points(y~x,pch=16,cex=2)
+m1<-lm(y~x)
+fake.x<-seq(0,3,length.out=31)
+pred.y<-predict(m1,list(x=fake.x))
+lines(pred.y~fake.x,lwd=3,col="red")
+#for each value of x, we want to draw a vertical line that goies from the fitted line to the observed value of y. This is the residual for each datapoint.
+#to do this we create a "for loop" which cycles through each of the x values in turn, and performs the operations contained within the curly brackets. The for loop uses "i" as an index to count from 1 to the length of the x vector (here, the length is 10 units). We can use this index i to identify which member of the x vector we wish to work with. Subsets of vectors or matrices are stated using square brackets [], with the desired subset written inside them. Here, we want to work with x[i] each time that i increases by 1.
+for(i in 1:length(x)){
+#for each value of x, x[i], draw a line between its fitted value and its observed y-value
+lines(c(x[i],x[i]),c(predict(m1)[i],y[i]),lwd=3,col="blue")}
+```
+
+Figure 4: Ordinary least squares regression line fitted to the relationship between y and x, showing the data as black points, line of best fit in red and residuals in blue.
+
+Finally for this section, we provide a fully annotated figure that describes the data, ordinary least squares regression line, its parameters and their meanings. This code is flexible...it makes no presumptions regarding the data that you simulated, except for the natural limits on the explanatory variable (which varies between zero and three). As a coding concept, note that it would have been simple to "fix" a dataset, and place all of the annotations on the plot using fixed coordinates. However, one of the main points of this exercise is to show that simulations give different outcomes every time if they use a random "seed". Run the code again and you will get a different answer. That's stats. Here, we have tried to make sure that the "residual" is annotated successfully by finding the largest residual (the datum that is furthest from the line of best fit), and placing its annotation halfway between the datum and the line. We achieved this by creating the object `which.biggest.residual` and using the `which.max` function, applied to the vector of residuals from the regression (`resid(m1)`) to populate this object. This object is not the VALUE of the biggest residual. It is the POSITION in the vectors of x and y that contains the biggest residual. Admittedly `which.biggest.residual` is a long name for an object...we retain it here for clarity, but the experienced coder might call it `wbr` or somesuch, to save on keystrokes.
+
+```{r}
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+points(y~x,pch=16,cex=2)
+m1<-lm(y~x)
+#use the "which.max" function to find out the index (where in the vector) of the largest residual from the fitted line
+which.biggest.residual<-which.max(resid(m1))
+fake.x<-seq(0,3,length.out=31)
+pred.y<-predict(m1,list(x=fake.x))
+lines(pred.y~fake.x,lwd=3,col="red")
+#the lines command takes the extreme values of x, concatenated into a short vector using c(); ditto the extreme values of y, and connects them with a line.
+lines(c(x[which.biggest.residual],x[which.biggest.residual]),c(y[which.biggest.residual],predict(m1,list(x=x[which.biggest.residual]))),lty=2,lwd=3,col="blue")
+lines(c(-1,x[which.biggest.residual]),c(predict(m1,list(x=x[which.biggest.residual])),predict(m1,list(x=x[which.biggest.residual]))),lty=2,lwd=3,col="red")
+#the following text() command takes the desired coordinates at which to place the text, and then uses "plotmath" via the expression() command to add Greek symbols. The "paste" command is used to paste together text, symbols and values from R objects or functions. ANy text must be enclosed in quotation marks ""
+text(0,predict(m1,list(x=x[which.biggest.residual]))+0.1,expression(paste(beta[0],"+",beta[1],x[i])),cex=2,col="red",adj=0)
+text(x[which.biggest.residual]-0.1,((predict(m1,list(x=x[which.biggest.residual]))+y[which.biggest.residual])/2),expression(epsilon[i]),cex=2,col="blue")
+text(x[which.biggest.residual],y[which.biggest.residual]+0.1,expression(paste(x[i],",",y[i])),cex=2)
+lines(c(0,0),c(0,coef(m1)[1]),lty=2,lwd=3,col="blue")
+lines(c(0,-1),c(coef(m1)[1],coef(m1)[1]),lty=2,lwd=3,col="blue")
+#the "mtext" command places text in the margins of the plot. The sides are numbered 1=bottom, 2=LHS, 3=top, 4=RHS. The "at" subcommand notes how far along this axis to p0ut the text, and the "line" subcommand states how many lines to move away from the plot.
+mtext(side=2,at=coef(m1)[1],line=1,expression(beta[0]),cex=2,col="blue")
+lines(c(3,3),c(predict(m1,list(x=2)),predict(m1,list(x=3))),lty=2,lwd=3,col="blue")
+lines(c(2,3),c(predict(m1,list(x=2)),predict(m1,list(x=2))),lty=2,lwd=3,col="blue")
+text(2.9,(predict(m1,list(x=2))+predict(m1,list(x=3)))/2,expression(beta[1]),cex=2,col="blue")
+lines(c(-1,x[which.biggest.residual]),c(y[which.biggest.residual],y[which.biggest.residual]),lty=2,lwd=3)
+mtext(side=2,at=y[which.biggest.residual],line=1,expression(y[i]),cex=2)
+lines(c(x[which.biggest.residual],x[which.biggest.residual]),c(y[which.biggest.residual],0),lty=2,lwd=3)
+mtext(side=1,at=x[which.biggest.residual],line=1,expression(x[i]),cex=2)
+lines(c(0,-1),c(coef(m1)[1],coef(m1)[1]),lty=2,lwd=3,col="blue")
+mtext(side=2,at=coef(m1)[1],line=1,expression(beta[0]),cex=2,col="blue")
+lines(c(x[which.biggest.residual],x[which.biggest.residual]),c(y[which.biggest.residual],predict(m1,list(x=x[which.biggest.residual]))),lty=2,lwd=3,col="blue")
+```
+
+Now, let's have a look at the distribution of those residuals using a histogram. Many of the statistical analyses we use make the assumption that the residuals follow a Normal distribution. So, we will also simulate a Normal distribution that has the same standard deviation as our observed residuals, so that you can compare the observed distribution to its "ideal" version.
+
+```{r warning=F}
+#Sometimes we need to change the general appearance and dimensions of our figures. We can use the `par` command to do this. But, seeing as we might want to revert to the previous appearance for any subsequent figures, here's a trick. Create an object opar to contain a copy of the original settings.Then, set the desired settings. Once the figure is drawn, reset the originals using par(opar). 
+opar<-par()
+#here we want to create a multi-plot figure, with two rows and one column (a 2x1 multiplot), using "mfrow". We also want to reduce the gap between the two subplots, using "mar"
+par(mfrow=c(2,1),mar=c(5,5,2,2))
+hist(resid(m1),main="Observed",xlim=c(-1,1),xlab=expression(paste(epsilon[i]," (residuals)")),cex.lab=2,col="blue",cex.main=2)
+#now simulate from a Normal distributioon with a mean of zero (the mean of your observed residuals will always be zero), and with the same standard deviation that you simulated.
+y.sim<-rnorm(100000,0,std.dev)
+#plot a smoothed version of the histogram for these simulated data
+plot(density(y.sim,prob=TRUE),main="Assumed",bty="n",xlab=expression(paste(epsilon[i]," (residuals)")),xlim=c(-1,1),cex.lab=2,cex.main=2)
+#and colour it in
+polygon(density(y.sim),col="blue")
+par(opar)
+```
+
+Does your observed distribution of residuals look anything liek a Normal distribution? Do you think a larger sample size would help? How might you simulate a larger sample size?
+
+##Inference
+So far we have simulated a "truth"...the relationship between average number of pet hedgehogs per household and average number of offspring per household, and the natural uncertainty associated with this relationship. We have then performed a survey of ten Pisky villages to create a sample of size n = `r n`. 
+
+A key point here is the fundamental difference between the truth, which you can think of as the population-level parameters, and the inference we make using a sample. The number of pet hedgehogs per family varies naturally among villages, and is determined only to some extent by the number of children per family. We use only a sample of villages to then try to infer the TRUE relationship between hedgehogs and children. Our inference will definitely be wrong. But how wrong? We also seek to describe our uncertainty. Do we have sufficient evidence to claim that a relationship exists? Within what bounds of confidence or credibility do our estimates of the slope and intercept actually lie? Can we predict the number of hedgehogs per family in a new village? How confident will we be in our prediction?
+
+##A Handful of Linear Regressions
+One of the main principles of this Applied Data Analysis module is that there is no single "right" way to analyse data. Finding signal amongst noise is an exploration that uses a combination of philosophy, sense and maths. The "best" way (and we mean "best" as a relative term, not as an absolute) depends on the data, the question, the analyst and the audience. In this module, we consider the methods for applied data analysis in "handfuls", usually five at a time. In particular, we consider five "engines" of analysis (by Eye, by Least Squares, by Maximum Likelihood, by Bayesian models, by Approximate Bayesian Computation). We then consider five methods for judging the IMPORTANCE of models, parameters and hypotheses (Deternmination, Confidence, Significance, Information and Credibility), and five methods for checking GOODNESS OF FIT (Checking Assumptions, Leverage, Cross-Validation, Data-Validation, Convergence). The five engines of linear regression are:
+
+####1. By eye
+   - Guesstimate the intercept and slope.
+   - Measure the residual sum of squares.
+   
+####2. By Ordinary Least Squares
+   - Use a long history of mathematical statistics to find the intercept and slope that minimises the sum of the squared residuals (in y) from the data to the line.
+   - The formulae are easy to find online, for example https://en.wikipedia.org/wiki/Simple_linear_regression
+   
+####3. By Maximum Likelihood
+   - Assumes a known probability distribution function for the residuals (AKA the "error family").
+   - Uses maths to calculate the likelihood of parameters,  given the measurements of the response and explanatory variables (can be written *L*($\beta$~0~,$\beta$~1~|**x**,**y**))
+   - Uses maths to find the values of $\beta$~0~ and $\beta$~1~ that maximise this likelihood.
+   - THIS IS NOT THE SAME as the probability that the parameters are true, given the data. We require Bayesian methodologies to find this out.
+   
+####4. By Bayesian Methodology
+   - Fundamental difference here is that we seek the probability of the parameters given the data, i.e. Pr($\beta$~0~,$\beta$~1~|**y**,**x**), not the other way round.
+   - Set prior probability distribution functions for the parameters to be inferred. These can be be uninformative priors if we genuinely have no idea, or informative priors if we have some kind of expert opinion or evidence base.
+   - Use Monte Carlo Markov Chain algorithm to converge on the posterior distribution of likely parameter values.
+   - In practice, this requires use of MCMC software like WinBUGS, JAGS or STAN. Very experienced coders might write their own MCMC engine.
+   - Flexible, elegant and powerful, but requires some patience as MCMC chains are hard to parallelise.
+   
+####5. By Approximate Bayesian Computation
+   - Not for the faint-hearted, but essential with very complicated models whose likelihood functions cannot be solved.
+   - Effectively, try all possible (or relevant) values of the parameters, simulate datasets based on them, and retain all datasets that lie within a given "resemblance threshold" of the observed data. 
+   - the most likely parameters are those which yield the datasets that are most likely to be retained.
+   - Requires LOTS of simulations and either a very powerful computer or lots of patience.
+   
+##Linear Regression By Eye
+Note that when viewing a scatterplot, your eyes are instinctively drawn more to the correlation than to the regression. The correlation minimises the PERPENDICULAR distances from the data to the line of best fit. The regression minimises the VERTICAL distances. The theory of linear regression is (usually) based on the assumption that the explanatory variables are measured without error and, ideally, are fixed by the experimenter. We rarely have this luxury when we perform surveys. The argument is an important one, see https://en.wikipedia.org/wiki/Linear_regression#Assumptions and many papers on the subject. In practice the world tends to favour, and use, Ordinary Least Squares as opposed to "orthogonal" regression.
+
+Here is our now-familiar scatterplot
+
+```{r}
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+points(y~x,pch=16,cex=2)
+```
+
+Use your eyes and your brain to guesstimate what the "best fit" value of y is when x = 0. Now, guesstimate how much y tends to increase for any unit increase in x (an increase of 1 unit of measurement in x). Draw this line and calculate the residual sum of squares.We provide an example here...not very good!
+
+```{r}
+beta0.eye<-0.75
+beta1.eye<-0.4
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+points(y~x,pch=16,cex=2)
+abline(beta0.eye,beta1.eye)
+#calculate residual sum of squares from line estimated by eye.
+y.eye<-beta0.eye+beta1.eye*x
+SSresid.eye<-sum((y-y.eye)^2)
+#calculate residual sum of squares from Ordinary Least Squares line of best fit
+SSresid.OLS<-sum(resid(m1)^2)
+```
+
+For our choice of beta0 = `r beta0.eye` and beta1 = `r beta1.eye`, we find SSresid = `r SSresid.eye`. Compare this to the residual sum of squares for the best fit line (using ordinary least squares): SSresid(OLS) = `r SSresid.OLS`.
+
+##Linear Regression By Ordinary Least Squares
+
+Centuries of mathematical statistics have revealed that the solution to the Ordinary Least Squares simple linear regression problem is relatively simple. The line must inevitably cross through the mean of x and the mean of y. The slope hinges on this point and is determined by the amount that y varies with a change in x, and by how much x varies.
+
+$$\beta_1 = \frac{Covariance(x,y)}{Variance(x)} = \frac{\frac{\sum(x-\overline{x})(y-\overline{y})}{n-1}}{\frac{(\sum{x}-\overline{x})^2}{n-1}} = 
+\frac{n\sum{xy}-\sum{x}\sum{y}}{n\sum{x^2}-(\sum{x})^2}$$
+
+$$\beta_0 = \overline{y}-\beta_1\overline{x}$$
+We can code this to work it out using R as a calculator
+
+```{r}
+
+SumX<-sum(x)
+SumY<-sum(y)
+SumX2<-sum(x^2)
+SumXY<-sum(x*y)
+
+beta1.est<-(n*SumXY-SumX*SumY)/(n*(SumX2)-(SumX^2))
+
+beta0.est<-((SumY/n)-beta1.est*(SumX/n))
+```
+
+Here, the OLS estimate of the slope is `r beta1.est` and of the intercept is `r beta0.est`.
+
+We can also do this automatically, and get a lot more useful information besides, using the "linear model" function `lm(y~x)` in R. You'll notice that we've already used this function to create some of our previous plots. The lm function creates an object that contains the Ordinary Least Squares regression fit to a response variable, which we state depends on an explanatory variable, hence y~x.
+
+#### Automatically
+
+```{r}
+
+m1<-lm(y~x)
+summary(m1)
+names(m1)
+coef(m1)
+
+```
+
+
+
+
+
+****
+
+## Linear Regression by Maximum Likelihood
+
+The Maximum Likelihood (ML) engine takes a different approach to modelling regressions. Instead of minimising the sum of the (squared) residuals, it instead maximises the likelihood of all possible combinations of the parameters and the values of the response and explanatory variables (reminder: for simple linear regression, the parameters are the intercept, slope and residual variance or standard deviation). In other words, what values of beta0, beta1 and sigma are most LIKELY for these data?
+
+The likelihood function, for proposed parameters given the data, requires us to make an assumption about the distribution of the residuals. The most common assumption is that the residuals have a Normal distribution.
+
+Here we use Ben Bolker's "bbmle" package to do the job of maximising the likelihood function for our simple linear regression. First we set up a function that calculates the "deviance" of any combination of parameters and data. The overall likelihood of the data&parameters is found by multiplying together the likelihood for each datapoint, which is found with reference to a Normal distribution. Deviance makes this easier by logging the likelihood, so that the value for each datapoint can be summed instead of multiplied (the log transformation converts products into sums because log(axb)=log(a)+log(b)). The log of a probability is always negative, so this sum will be very negative. Hence, deviance multiplies the sum by (-2). The bigger the deviance, the less likely is the combination of data and parameters. We're going to ask a maximum likelihood algorithm to explore all possible values of intercept, slope and std deviation to find the one that minimises deviance. We create a short function that does two jobs: first, it creates a brake so that if negative values of standard deviation are ever tried, deviance will be very large indeed and therefore will be rejected by our minimisation algorithm. Second, it calculates deviance for any chosen combination of parameters. Then, we use mle2() to do the job of exploring parameter space to minimise deviance. To set it off, we provide it with relevant starting values. If the algorithm is robust, it shouldn't matter what starting values you provide. 
+
+```{r warning=FALSE, message=FALSE}
+# 
+#create a function called lm.loss which uses the three parameters we wish to infer.
+log.likelihood<-function(b0,b1,sigma){
+ #prevent exploration of -ve std deviations by giving them massive deviance (this prevents any attempt to draw from a Normal distribution with negative variance, which is impossible)
+  if(sigma < 0) {deviance <- 10000000}
+ #the if statement will cause anything in the curly brackets to be computed IF the condition is satisfied
+ if(sigma > 0) {
+  likelihoods <- dnorm(y, mean = b0+b1*x,
+  sd=sigma)
+  log.likelihoods<-log(likelihoods)
+  deviance<- -2 * sum(log.likelihoods)
+ }
+return(deviance)
+}
+
+#the mle2 function then finds the parameter values that minimise deviance
+fit <- mle2(log.likelihood, start = list(b0 = 0.5, b1 = 0.5, sigma=1))
+summary(fit)
+coef(fit)
+```
+
+How did the function mle2 do this? This section is quite advanced. Here we do the maximum likelihood calculations using the "optim" optimiser in R. The task is to explore the likelihood function to work out the parameters that minimise deviance.
+
+```{r warning=FALSE, message=FALSE}
+#create a function called lm.loss which uses a single object called "par". "par" will be a vector containing all the parameters we wish to infer.
+lm.loss1 <- function(par) {
+  #the first element of par will be the intercept
+ b0<-par[1]
+ #the second element of par will be the slope
+ b1<-par[2] 
+ #the third element of par will be the residual standard deviation
+ sigma <- par[3]
+ #prevent exploration of -ve std deviations by giving them massive deviance (this prevents any attempt to draw from a Normal distribution with negative variance, which is impossible)
+ if(sigma < 0) {deviance <- 10000000}
+ #the if statement will cause anything in the curly brackets to be computed IF the condition is satisfied
+ if(sigma > 0) {
+   #for the current value of the parameters, draw the likelihoods for each datapoint from the Normal distribution, then log them, then sum them to calculate deviance
+  likelihoods <- dnorm(y, mean = b0+b1*x, sd = sigma)
+  log.likelihoods <- log(likelihoods)
+  deviance <- -2 * sum(log.likelihoods)
+ }
+}
+
+#This finds maximum likelihood estimates for the parameters, using an optimiser algorithm 
+parameter.fits <- optim(par = c(0.5,0.5,1),fn = lm.loss1, hessian = T)
+parameter.fits$par
+```
+
+The Maximum Likelihood engine has explored the likelihood function to find the set of parameters (beta0, beta1 and residual standard deviation) that minimise the deviance, which is equivalent to "maximising the likelihood" (hence, "Maximum Likelihood"). You'll see that the estimates (beta0 = `r parameter.fits$par[1]`; beta1 = `r parameter.fits$par[2]`) are very similar to the OLS estimates (`r coef(m1)[1]`; `r coef(m1)[2]`) and to the estimates found using mle2 (`r coef(fit)[1]`; `r coef(fit)[2]`). This is reassuring. The tiny differences show us that the optimisation engines are NOT perfect. Also, it's important to note that the optimiser requires us to provide sensible starting values for the parameters...the whole thing can collapse if the initial values are unreasonable. mle2() is usually superior to the pure "optim" example because, like lm(), it provides us with loads more information that help us to understand the importance, and goodness of fit, of the model. 
+
+*****
+##Linear Regression by Bayesian Modelling using MCMC
+So far, we have used Ordinary Least Squares and Maximum Likelihood to help us find the line of best fit in a simple linear regression. OLS minimises the sum of the squared residuals around the line of best fit. ML maximises the likelihood of the data across a broad set of parameter space, by minimising deviance. The Bayesian approach is different. The Bayesian asks, what is the probability that a hypothesis is TRUE, given the signal that we found? The answer, ascribed to Reverend Thomas Bayes (1701-1761), is that Pr(parameters|data) = Pr(data|parameters)*Pr(parameters)/Pr(data). This has turned out to be one of the most powerful statements in probability theory. In words, it says that the probability that an inference is true, given the data, is equal to the probability of finding the data, given a set of parameters, multiplied by the probability that the parameters are true, all divided (normalised) by the probability of generating the data.
+
+This is powerful for several reasons.
+  - it says what most people want to hear: what is the probability that my hypothesis is TRUE?
+  - it allows us to include prior information (e.g. expert opinion, or previous evidence) regarding the inference.
+  - it turns out to be quite simple to work with very complex models in a modular fashion.
+  
+It also leads to some complications.
+  - Pr(data) is very hard, and often impossible, to work out. Luckily this part of the formula is considered a "normalising constant", relevant to all possible hypotheses associated with a single dataset, allowing us to write: Pr(parameters|data) IS PROPORTIONAL TO Pr(data|parameters)*Pr(parameters).
+  - actually working with Bayes theorem, for statistical modelling, requires us to use computationally expensive engines. The best one is the Monte Carlo Markov Chain. The MCMC engine chooses "possible" values for the desired parameters, then challenges them with new values. If the new values are more likely, they get selected, and the next challenge begins. At each step, unlikely parameters might beat more likely parameters. But, over thousands of challenges, the more likely parameters tend to win. The end result is a POSTERIOR distribution of possible parameters, in which some parameter values are more likely than others. The mean and variability of these posterior distributions provide us with information about the likely truth. These distributions remind us that we cannot be certain about our inference. We must instead express our uncertainty about our inferred parameters.
+  
+Luckily, several pieces of software have beendeveloped to help us. Here we use NIMBLE. 
+
+Coding for NIMBLE (or WinBUGS, or OpenBUGS) is confusing to start with, but gets easier with practice. R has useful interfaces with all of these softwares. Here we use the package `nimble`. Nimble asks the user to create a model code, then runs the MCMC engine with seven important inputs:
+  - The parameters that we wish to infer.
+  - The data and constants that we wish to use.
+  - The nimble model that we wish to use.
+  - Starting values for our parameters: we have to provide initial guesses for our parameters. These initial values should be reasonable.
+  - Burn-in period: in the first few set of challenges, the answers can be way out. It's best practice to reject the first 10% of challenges when storing our posterior distributions.
+  - Thinning interval: Each challenge usually resembles the previous one, hence it is common to only store some of the outcomes. A thinning interval of 10 means that we store the outcome of every 10th challenge.
+  - Number of chains: how many attempts should be made at creating posterior distributions? Using more than one chain allows us to check that the inference is not sensitive to the starting values.
+
+#### NIMBLE model code
+Nimble models are very similar to WinBUGS and OpenBUGS models. They are tricky to learn from first principles, but there are plenty on the web to use as templates.
+
+The building blocks of a Nimble model are:
+
+1. The likelihood of the data. Here we describe the probability distribution function from which the data is assumed to have been sampled. We loop through each data point using a `for()` loop, and for each we draw from [in this case] a Normal distribution with mean `mu[i]` and PRECISION `inv.var`. We use `mu[i]` because each fitted value of y will depend on its associated (ith) value of x. We use PRECISION, which is the reciprocal of the VARIANCE, because that's best practice for MCMC modelling, and is the default setting for dnorm in Nimble. 
+
+When we draw from a probability distribution function, we use the tilde symbol (~) to describe a STOCHASTIC node of the model (part of the model that is free to vary). We then state that the expected value for each y[i] depends on the intercept plus the slope times x[i]. This is arithmetic, so it does not have a stochastic node. Note that the residuals are captured in the precision parameter of `dnorm`, and are not written in the regression formula.
+
+2. Priors for the inferred parameters
+Here we are inferring beta0 (the intercept), beta1 (the slope) and sigma (the standard deviation of the residuals). Each of these parameters requires a stochastic node because we do not know their value and they are free to vary. In the "priors" section we tell Nimble everything we know about these parameters. For our purposes, we want to be as vague as possible, hence we should provide "uninformative" or "vague" priors. This means that we have no idea what the parameters could be. For beta0 and beta1 we choose to describe our prior knowledge using Normal distributions with a mean of zero and VERY LOW PRECISION (i.e. very large variance). For sigma, we offer dunif(smallest,largest), which describes a Uniform distribution (google it...all values are equally possible). The precision is an arithmetic function of sigma (specifically, the reciprocal of the variance, which itself is the square of the standard deviation).
+
+Choices of prior distributions CAN influence the inferences that you make. Lots of options are possible, but these versions are useful for our purposes here.
+
+####Overview of the model
+Here, we wish to infer the intercept, slope and residual standard deviation of a simple linear regression. We have no prior information about these parameters except that the residual standard deviation must be at least zero. We suggest a uniform prior for the residual standard deviation (this is a bit risky because if the true value lies above the upper limit of our prior distribution, it will never be found!), and vague Normal priors for the intercept and slope. Each value of the response variable is a draw from a Normal distribution with expected value = beta0+beta1*x, and precision defined by the residual standard deviation (sigma). We suggest random initial values for beta0, beta1 and sigma, and run three chains through our MCMC algorithm. We run the chains for 20,000 (20K) iterations, reject the first 2000 iterations (burn-in), and store every 10th iteration.
+
+If you spend some time scrutinising the following code, you'll see that sometimes we use the "gets" symbol "<-", and other times we use the "tilde" symbol "~". The key difference is that "<-" describes a fixed operation on objects. "~" is used whenever we have a STOCHASTIC NODE, i.e. an object that is drawn randomly from a probability distribution function e.g. Normal, uniform, binomial, poisson etc. 
+
+```{r}
+#Specify the model
+
+code <- nimbleCode({
+  # Decribe the Likelihood Function for the data
+  # looping through each datapoint
+  for(i in 1:n){
+    # that datum is a draw from a Normal distribution with a mean and a precision
+    y[i]   ~ dnorm(mu[i], inv.var)
+    # the mean is the prediction made by a straight line with intercept and slope
+    mu[i] <- beta0 + beta1 * x[i]
+  }
+  
+  # Priors for parameters
+  # our prior knowledge of the intercept is very vague...Normal distribution with mean zero and very low precision. Essentially this says the intercept could be any value.
+  beta0 ~ dnorm(0, 0.0001)
+  # our prior knowledge of the slope is very vague...Normal distribution with mean zero and very low precision. Essentially this says the intercept could be any value.
+  beta1 ~ dnorm(0, 0.0001)
+  # tell R that the precision is determined by the standard deviation we wish to infer
+  inv.var <- 1 / (sigma * sigma)
+  # and that standard deviation lacks any prior information esxcept that it must be greater than one and less than twenty. Why did we not choose a Normal distribution for this parameter? Because we can't risk it going negative, which would break the algorithm.
+  sigma ~ dunif(0, 20)
+}
+)
+
+consts <- list(n = n)
+
+data <- list(y = y, x = x)
+
+inits <- list(beta0 = rnorm(1),
+              beta1 = rnorm(1),
+              sigma = runif(1))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta0", "beta1", "sigma"))
+
+#make the posterior coda chains available for analysis
+m1.MCMC.mat <- as.matrix(mcmc.out$samples)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+
+```
+
+So, if all we want to have achieved is inference of the "best fit" regression line, then the Bayesian approach says beta0 = `r mean(m1.MCMC.dat$beta0)`; beta1 = `r mean(m1.MCMC.dat$beta1)`; sigma = `r mean(m1.MCMC.dat$sigma)`. Compare these to the inferences made by Ordinary Least Squares and Maximum Likelihood.
+
+In the background, Nimble has stored ALL of the posterior values of our three parameters. `mcmc.out$summary` gives us just a summary of the outcome. It tells us the MEAN value for the posterior of each parameter. It also tells us the 2.5th percentile, lower quartile, median, upper quartile and 97.5th percentile of each parameter's posterior distribution. We might want to see the complete posteriors, so using the coda library...
+
+```{r}
+plot(mcmc.out$samples)
+```
+
+This also allows us to see whether the MCMC chains are "well behaved". This is actually a special "goodness of fit" check for Bayesian models, so we'll return to it later in the course, but we'll have a quick look here. We plot the outcome of each iteration sequentially. Most of the values of each parameter will be localised around the mean of the posterior, but some will be extreme values. These should not be clustered through iteration "time". The output should look like a hairy caterpillar, with no obvious trends.
+
+******
+
+
+## Approximate Bayesian Computation
+Maximum Likelihood and Bayesian approaches to inference require the user to know the likelihood function associated with their model and data. For simple models, like linear regression with Narmally distributed residuals, the likelihood function is well know and easy to work with. For more complex models, sometimes the likelihood function cannot be worked out. But all is not lost. Approximate Bayesian Computation, known as ABC, uses simulation techniques to help us infer posterior probabilities for parameter values. Remember that we seek to work out Pr(parameters|data). The approach goes like this:
+  - Choose any value of the model's parameters, from the prior distribution. This is called a "proposal" for the parameters.
+  - Simulate a dataset based on this set of parameters.
+  - Compare the simulated dataset to the observed dataset, using a similarity metric.
+  - Propose another set of parameters. Simulate. Compare to observed data. Feasible if similar. 
+  - Repeat whole process for all possible proposals (within reason).
+  - Choose a similarity threshold that makes the proposals "feasible"
+  - Retain all parameter proposals whose simulated datasets meet the feasibility criterion.
+  - Draw histograms of the feasibility for bins of similar parameter proposals.
+  - Posterior mode, i.e. the most feasible parameter proposal, provides us with our best fit parameters.
+  
+The outcome is very similar to the posterior probability distributions produced by Bayesian modelling, but the algorithm does not use an iterative scheme like MCMC. It does, however, require multiple simulations based on every possible proposed combination of parameters...hence it is intensely computationally expensive.
+
+A core issue for ABC modellers is how to choose the "similarity metric", used to compare simulated datasets to observed data; and "similar" should be considered "similar enough" to be "feasible".
+
+R provides some packages that "do" ABC for the user (e.g. `EasyABC`), but here we demonstrate how to develop an ABC algorithm from first principles.
+
+
+#### Manually
+
+```{r}
+
+#create a matrix that will contain "nsims" simulations (in rows) of "nparams" parameters (in columns). Here we want to infer three parameters...intercept, slope and residual standard deviation.
+nsims<-10000
+nparams<-3
+#make the matrix but fill it with NAs, which will be replaced when we do our simulations
+sim.abc <- matrix(NA,nr=nsims,nc=nparams)
+
+#parameter beta0 can have any value between zero and 10, with equal probability
+sim.abc[,1]<-runif(nsims,0,10)
+#parameter beta1 can have any value between -5 and 5, with equal probability
+sim.abc[,2]<-runif(nsims,-5,5)
+#parameter sigma can have any value between zero and 10, with equal probability
+sim.abc[,3]<-runif(nsims,0,10)
+
+#for each random combination of parameter values, simulate data according to linear regression model
+fits<-numeric(nsims)
+for(i in 1:nsims){
+  #make a simulated dataset of n observations, using the random parameter values stored in sim.abc. The subsets of sim.abc are written sim.abc[row,column], so i is the index of which row we are using, and the columns refer to the three simulated parameters (intercept, slope, std dev)
+ simulated.sample<-rnorm(n, mean = sim.abc[i,1]+sim.abc[i,2]*x, sd = sim.abc[i,3])
+ #and calculate our measure of resemblance to the original data, using a sum of squared differences
+fits[i]<-sum((simulated.sample-y)^2)
+ }
+
+#what threshold of similarity are we happy to consider "feasible"? Here, we use the full posterior distribution of similarities and only the most similar 1/100th
+acceptance.threshold<-0.01
+#use the quantile function to work out the "best" 1% of fits
+keep<-which(fits<quantile(fits,acceptance.threshold))
+#keep only that best 1%, and ditch the rest
+accepted.parameters<-sim.abc[keep,]
+
+par(mfrow=c(3,2))
+plot(accepted.parameters[,1],type="l")
+hist(accepted.parameters[,1], main = "Posterior for intercept")
+plot(accepted.parameters[,2],type="l")
+hist(accepted.parameters[,2], main = "Posterior for slope")
+plot(accepted.parameters[,3],type="l")
+hist(accepted.parameters[,3], main = "Posterior for Residual Error")
+
+print(c(median(accepted.parameters[,1]),mean(accepted.parameters[,2]),mean(accepted.parameters[,3])))
+
+```
+
+Wow that's a really bad inference (compare the values to those yielded by OLS, ML and MCMC). There are four important issues at play. First, the priors are very broad. We could tighten them into more credible ranges. Second, the quality of the inference will be affected by the number of simulations. We could increase this. Third, the choice of acceptance threshold will affect the range of accepted parameters. We could narrow this. Fourth, inference of the intercept is notoriously weak when the value x=0 lies a long way away from the main body of data. We could fix this by "centering" the data to have a mean of zero (subtract the mean of x from every value of x).
+
+```{r}
+
+nsims<-1000000
+sim.abc <- matrix(NA,nr=nsims,nc=nparams)
+#parameter beta0 can have any value between zero and 2, with equal probability
+sim.abc[,1]<-runif(nsims,0,2)
+#parameter beta1 can have any value between 0 and 5, with equal probability
+sim.abc[,2]<-runif(nsims,0,5)
+#parameter sigma can have any value between zero and 10, with equal probability
+sim.abc[,3]<-runif(nsims,0,2)
+
+#for each random combination of parameter values, simulate data according to linear regression model
+fits<-numeric(nsims)
+for(i in 1:nsims){
+ simulated.sample<-rnorm(n, mean = sim.abc[i,1]+sim.abc[i,2]*x, sd = sim.abc[i,3])
+fits[i]<-sum((simulated.sample-y)^2)
+ }
+
+#what threshold of similarity are we happy to consider "feasible"? Here, we use the full posterior distribution of similarities and only the most similar 1/10000th
+acceptance.threshold<-0.001
+keep<-which(fits<quantile(fits,acceptance.threshold))
+accepted.parameters<-sim.abc[keep,]
+
+par(mfrow=c(3,2))
+plot(accepted.parameters[,1],type="l")
+hist(accepted.parameters[,1], main = "Posterior for intercept")
+plot(accepted.parameters[,2],type="l")
+hist(accepted.parameters[,2], main = "Posterior for slope")
+plot(accepted.parameters[,3],type="l")
+hist(accepted.parameters[,3], main = "Posterior for Residual Error")
+
+print(c(median(accepted.parameters[,1]),mean(accepted.parameters[,2]),mean(accepted.parameters[,3])))
+```
+
+But which one of these changes worked?
+
+
+******
+##And Finally##
+
+Let's take stock. Why did we do all this modelling? The task of the statistical model is to infer parameters that describe the "truth" for all members of a population. Our statistical engines have inferred a linear relationship between the average number of pet hedgehogs per pisky household, and the average number of pisky children per household. We know we're on the right track with this linear relationship because we SIMULATED IT. Here is a rare example where we know the truth because WE CREATED IT. In the real world of empirical research, you will never actually have this luxury.
+
+Way back at the start of the practical, we simulated the relationship between pet hedgehogs and pisky children to have an intercept of 1, a slope of 0.5 and a standard deviation of 0.3. COnsider this the TRUTH. We then sampled hedgehog-ownership from 30 pisky villages that varied naturally in the number of children per household. We used five statistical engines to infer the intercept and slope and noise in this relationship. Did the inference work? Were the parameter estimates close to the truth? Was the truth bounded by the uncertainty in our parameters? Did the methods vary in their ability to infer the truth? Can we ever be CERTAIN that our inference will be CORRECT?
+
+##Glossary of Statistics
+
+**Statistics**: A scientific discipline performed by statisticians. Usually, statistics is the science of inferring truths and testing hypotheses based on incomplete sampling of populations.
+
+**Hypothesis**: a statement about the world that can be FALSIFIED (i.e. demonstrated to be probably wrong)
+
+**Null Hypothesis**: a statement that there is nothing interesting happening.
+
+**Signal**: The evidence that suggests the null hypothesis is FALSE. This might come in the form of a relationship between things, or a difference between things.
+
+**Noise**: Irritating (or beautiful) stuff that makes it hard to detect signal. Natural systems are notoriously noisy. Noise has many sources. We might measure things with uncertainty. Natural objects might simply vary randomly. Noise can also describe all of the signal that we have failed to measure (yet). Without noise, there would be no statistics. Statistics is the science of detecting signal amongst noise.
+
+**Population**: the entire set of objects that could be measured if we had time, resource and enbergy to measure all of them. If we could measure them all, then statistics would be redundant. 
+
+**Sample units**: the objects that we measure, having sampled them from populations of objects.
+
+**Experimental units**: the objects that we measure, having manipulated them experimentally. Experimental and Sample units are often confused or interchanged, at the analyst's peril.
+
+**Variable**: Noisy attribute of objects that we measure. Each variable can be considered as a vector of measurements, all sharing the same unit of measurement.
+
+**Response variable**: the variable that we seek to understand. Usually the subject of our hypothesis. Usually appears on the vertical ("y") axis of our figures.
+
+**Explanatory variable**: any variable that we think might influence the response variable.
+
+**Predictor**: another name for "explanatory variable", so-called because its value is expected to "predict" the value of the response variable.
+
+**Model**: in its statistical sense, a statement of the relationship between response and explanatory variables. Models can be vague, but ideally should be expressed as algebra, using parameters to describe the form of the relationship.
+
+**Parameter**: an aspect of the signal that the analyst wishes to (a) infer and (b) determine whether significant, credible and/or important. Parameters are generally thought of as features of populations, while "statistics" are features of the samples used in analyses.
+
+**Mean**: the average, or "expected" value of a variable.
+
+**Standard deviation**: the average or expected deviation of a single observation/measurement from its expected value.
+
+**Variance**: The average or expected square of the deviation of a single observation/measurement from its expected value. 
+
+**Residual**: the discrepancy between an observed response variable and the value that is predicted by a model.
+
+**Sum of Squares** The sum of the squared distances from the data to the predictions of a model, or from the predictions of a model to the predictions of a different model.
+
+**Intercept**: The expected value of the response variable when all of the explanatory variables are known to have value "zero".
+
+**Slope**: the amount by which the response variable is expected to change when an associated explanatory variable increases by one unit of measurement.
+
+**Independence**: a preferred, but unfortunately quite unusual, situation in which any measurement of any object is not affected by the measurements of all the other objects in a dataset. Many classical analysis tools RELY on this as a basic assumption. It is difficult to check. Common sources of non-independence include phylogenetic signal, spatial patterns, time series autocorrelation, and the sharing of (often unmeasured) properties among groups of sample or experimental units. 
+
+**Experiment**: designed specifically to deal with the non-independence problem. Experiments try to manipulate the experimental units so that they differ ONLY in the explanatory variables.
+
+**Survey**: sample units are drawn, preferably randomly, from the population. Surveys are very prone to bias and to non-independence of survey units.
+
+**Error distribution (or family)**: the residuals of the model are expected to conform to a known statistical process, or probability distribution function (pdf). Common error distributions include:
+
+  * Gaussian (or "Normal" with a capital N): probably the most famous pdf. Used to describe the distribution of continuous measurements. Bell shaped curve, symmetrical and with tails stretching out to infinity both ways. Most classical, mathematical statistics are based on this pdf because, although complicated to look at, it is remarkably amenable to mathematical manipulation. Has two parameters: mean and variance.
+
+  * Poisson: The distribution of counts of things that occur randomly and independently through space or time. Bounded below by zero (can counts ever be negative?), composed of integers (can counts ever be fractions?) and stretching upwards to infinity. Has one parameter and the amazing property that the mean is identical to the variance.
+
+  * Binary (or "Bernoulli"): the expected distribution of success in a single trial. Can only take one of two values: zero or one. The distribution has a single parameter, the probability of success. 
+
+  * Binomial: The distribution of number of successes out of a fixed number of trials, where each trial has the same probability of success and is independent of the other trials. Has one parameter (probability of success) and one constraint (number of trials). Bounded between zero and number of trials. The single parameter is bounded between zero and one.
+
+  * Negative binomial: The distribution of number of events when events are clustered in time or in space. Commonly used to describe data containing lots of zeroes but with some large counts, and which defy the Poisson distribution or violate its assumption of independent events. Has two parameters to describe expectation and the intensity of clustering. Bounded eblow by zero but stretching to infinity.
+
+  * Many others exist, including one that describes the distribution of bullet holes that hit a wall at a fixed distance from a chair that rotates through 180 degrees. This distibution, whose name I have forgotten, has no mean and infinite variance. Or I might have dreamt it.
+

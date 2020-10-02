@@ -1,0 +1,648 @@
+---
+title: "Applied Data Analysis Practical 6: Mixed Effects Modelling in R"
+author: "Matthew Silk and Dave Hodgson"
+date: "12 September 2019"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+####Set up the R environment
+
+```{r warning=FALSE, message=FALSE}
+
+rm(list=ls())
+
+set.seed(1)
+
+library(R2jags)
+library(boot)
+library(bbmle)   ##this has mle2 in
+library(lme4)
+library(nlme)
+```
+
+###Load Piskie dataset
+Here we use the full dataset from our mytho-ethnographic study of Pisky villages. Cornwall has been mapped according to its postcodes, and the underlying magic field strength has also been mapped using sensitive wizardry. Magic zones are marked in purple, and zones lacking magic are marked in green. Sixty Pisky villages were monitored for a really long time, and informatioon sourced on several variables:
+  1. Longitude and Latitude
+  2. Inland or Coastal
+  3. The main Occupation of piskies in the village (Farmers, Miners, Fisherfolk or SMugglers)
+  4. The average Population, through time, of each village
+  5. Whether or not each village contained a "Plen-an-Gwarry". This is a traditional Pisky meeting place.
+  6. Average Wealth, measured in Pisky Pounds, of villagers
+  7. The number of distinct songs known by the villagers
+  8. Mean height of the villagers, in cm
+  9. The modern postcode of the villages
+
+<center>
+
+![Figure 1: Cornwall, an underlying random field, and the positions of 60 Pisky villages](Pisky Villages.PNG)
+
+</center>
+
+These data are stored in a dataset, saved as a comma-separated file called "pisky villages.csv". Read in the dataset. 
+
+```{r warning=FALSE, message=FALSE}
+
+v_data<-read.csv("pisky villages.csv")
+names(v_data)
+```
+
+##Mixed-Effects Modelling
+
+Recall the five core assumptions of "classic" General Linear Models:
+  1. The residuals of the model are Normally distributed.
+  2. All residuals share the same variance.
+  3. The residuals are independent of one another.
+  4. Data has been sampled at random and without bias.
+  5. The linear model is relevant.
+  
+Using the framework of Generalized Linear Models, we have worked out how to solve issues associated with assumptions 1, 2 and 5. Assumption 4 remains with the experimenter or surveyor: the only way to bring inference back towards the "truth", if the data is biased in any way, is to bring prior evidence to bear in a  Bayesian framework.
+
+Here we concentrate on **Assumption 3: Independence of Residuals**. In many experiments or surveys, we know that the data is structured into clusters, like genotypes, spatial locations, dates, observers. These clusters are members of a wider population of clusters, and we might therefore seek to infer how much variation exists AMONG clusters, rather than differences BETWEEN clusters. This might be useful in (at least) two ways:
+
+  1. Variation among clusters might be our primary interest. For example, we might wish to partition noise into variation associated with genotype, and residual variation. This helps us to infer the heritability of traits. For example, we might wish to determine whether ecological processes vary most among regions, among locations, among sites or within sites. For both examples we are PARTITIONING variance among hierarchical scales of the system being measured.
+  
+  2. Variation among clusters might structure our data, but not be part of our hypotheses. We wish to account for non-independence of residuals by ABSORBING the variation among clusters, leaving behind the variation associated with the predictors whose importance we wish to test. For example, we might wish to infer a relationship between fecundity and body mass, across species of mammal, but we recognise that our data is clustered into taxonomic groups, which share similar amounts of fecundity (and body size). To avoid false inference, we must absorb the taxonomic variation, leaving behind independent residuals for the test of our primary hypothesis. For example, we might have performed a microbiology experiment in several growth cabinets, which introduce extra noise into our results. We can absorb the variation among cabinets, leaving behind independent residuals associated with our experimental treatments. For example, we might study the growth of crops in a split plot experiment, where several plots each have a control and a fertiliser treatment. We shoudl absorb the variation among plots before trying to test the importance of fertiliser.
+
+###Fixed Effects and Random Effects
+
+In both scenarios, we will often have a mixture of FIXED EFFECTS (explanatory variables for which we wish to infer slopes or differences **between** means of categories), and RANDOM EFFECTS (categorical explanatory variables for which we wish to infer variation **among** categories). This leads to a new kind of linear model, which we call a MIXED EFFECTS MODEL because it contains FIXED and RANDOM effects.
+
+Traditionally, random effects were often modelled as fixed effects but ignored during hypothesis tests. The cost of doing this is in degrees of freedom: if the random effect has many clusters, and each cluster uses a degree of freedom for the inference of its cluster-specific mean, then the remaining power to test our important fixed effects becomes painfully small (because the residual degrees of freedom are lost). 
+
+Mixed-effects models get round this problem by inferring VARIANCE AMONG clusters of the random effect(s), rather than differences between means. Each inferred variance uses up just one degree of freedom, leaving plenty behind for the testing of hypotheses associated with the fixed effects. The very simplest mixed-effects model would be a linear regression that accounts for the random intercept of "group". This model would fit a linear regression between y and x, but would fit a normal distribution to the different intercepts for each group. Instead of inferring each group's intercept (using up too many degrees of freedom), the model infers the **variance** of the normal distribution that captures how much the groups vary in intercept (and this variance uses only a single degree of freedom). It's also possible (and often advisable) to fit **random slopes** as well. Here, the intercepts of the groups follow a Normal distribution, but so do the per-group slopes of the relationship between y and x. What's left behind is the global relationship between y and x, having accounted for variation among groups.
+
+If you wish to partition variance through a hierarchy of sources, then random effects are essential and are the main focus of your analysis. If you wish to absorb variance to deal with non-independence of residuals, then random effects are important: as a rule of thumb for tests of significance, fixed effects are those associated with your hypotheses, while random effects are those that do not appear in your hypotheses, but are known to influence the data.
+
+Covariates are not suitable as random effects because they do not form natural "clusters". Luckily, inferring the (linear) effect of a covariate only requires one degree of freedom, the same as the inference of a random effect variance, so there is no cost to including covariates as fixed effects.
+
+###Linear Mixed Effects Models
+We are now familiar with the GLM framework, in which the response variable is determined by a set of explanatory variables (AKA predictors) according to a set of beta parameters (slopes for covariates, and differences among means for factors), plus some residual noise. The extra component introduced by Mixed-effects Modelling is to partition the NOISE into separate components: deviance associated with each random effect variable, and residual deviance.
+
+$$ \mathbf{y} = \beta_{0} + \sum{\beta_{i}\mathbf{x}_{i}} + \sum{\gamma_{j}} + \mathbf{\epsilon} $$
+and, for the linear algebraists among you, represent the fixed effects using the model matrix **X** and the vector of parameters $\mathbf{\beta}$; the random effects as a sum of their associated deviances, and residual variation as $\epsilon$.
+
+$$ \mathbf{y} = \mathbf{X}\mathbf{\beta} + \sum{\mathbf{\gamma}_j} +\mathbf{\epsilon}$$
+where we assume that \epsilon is a vector of samples from a Normal distribution with mean 0 and standard deviation defined by the residuals.
+
+In most applications, there will be just a single random effect variable, so we will usually work with:
+
+$$ \mathbf{y} = \beta_{0} + \sum{\beta_{i}\mathbf{x}_{i}} + \gamma + \mathbf{\epsilon} $$
+
+
+
+##An Example: Pisky Height and Wealth
+In our mytho-ecological survey of Pisky villages, we measured average height in each village, the main occupation of each village, and the mean wealth of each village. We wish to infer the influence of Wealth and Occupation on Pisky Height, based on a mythological thesis that claimed wealthy Piskies grow shorter, and that Mining Piskies are even shorter than other Piskies because of the small holes they work in.
+
+Let's first use our eyes to judge the relationship between Height and Welath, among the four occupations. Green data represent Farming villages; Blue data are Fishing villages; black for mining, and red for smuggling.
+
+```{r warning=FALSE, message=FALSE}
+plot(Height~Wealth,data=v_data,type="n")
+points(Height~Wealth,data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="green")
+points(Height~Wealth,data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="blue")
+points(Height~Wealth,data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="black")
+points(Height~Wealth,data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="red")
+```
+
+There exist some clear differences in height and wealth among the occupation categories, but there is no clear overall relationship between Height and Wealth. If we did not know the Occupations, we might conclude that Height declines with increasing Wealth. But we do, so that relationship might simply be due to Occupation patterns.
+
+What does a GLM tell us about the relationship?
+
+```{r warning=FALSE, message=FALSE}
+#maximal model includes the interaction
+m1<-glm(Height~Occ*Wealth,data=v_data)
+summary(m1)
+#remove and test the interaction
+m2<-update(m1,~.-Occ:Wealth)
+anova(m1,m2,test="F")
+#not sig
+#CHeck the main effects
+m3<-update(m2,~.-Wealth)
+anova(m2,m3,test="F")
+#not sig
+m4<-update(m2,~.-Occ)
+anova(m2,m4,test="F")
+#sig
+#Minimal Adequate model is Height~Occupation.
+#Check significance 
+m5<-update(m3,~.-Occ)
+anova(m3,m5,test="F")
+#yes it's significant. This is the MAM
+
+plot(Height~Wealth,data=v_data,type="n")
+points(Height~Wealth,data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="green")
+points(Height~Wealth,data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="blue")
+points(Height~Wealth,data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="black")
+points(Height~Wealth,data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="red")
+fake.wealth<-seq(min(v_data$Wealth),max(v_data$Wealth),length.out=1000)
+pred.farm<-predict(m3,newdata=list(Wealth=fake.wealth,Occ=rep("Farming",1000)))
+pred.fish<-predict(m3,newdata=list(Wealth=fake.wealth,Occ=rep("Fishing",1000)))
+pred.mine<-predict(m3,newdata=list(Wealth=fake.wealth,Occ=rep("Mining",1000)))
+pred.smuggle<-predict(m3,newdata=list(Wealth=fake.wealth,Occ=rep("Smuggling",1000)))
+lines(pred.farm~fake.wealth,lwd=3,col="green")
+lines(pred.fish~fake.wealth,lwd=3,col="blue")
+lines(pred.mine~fake.wealth,lwd=3,col="black")
+lines(pred.smuggle~fake.wealth,lwd=3,col="red")
+```
+
+But, this analysis suffers a major issue related to non-independence. The data were surveyed across a spatial landscape. The villages have postcodes associated with which part of Cornwall they occupy. These postcodes have nothing to do with our hypotheses, but they might structure the height of Piskies. Postcodes are samples from a much larger population of postcodes, and represent spatial clusters. We should account for the spatial non-independence of Pisky villages in our analysis. Postcode is ideal as a random effect, and we should test our hypothesis using a Mixed Effects Model.
+
+##Statistical Engines for Mixed-Effects Models
+At this point in our statistical journey we should accept that the model is too complex for our eyes to analyse, and we must wave goodbye to Ordinary Least Squares. OLS is based on the squared residuals from the data to the model. When we include a random effect, which is an estimate of VARIANCE rather than of MEAN, then we can't calculate least squares any more because our model doesn't include a fitted value for each data point.
+
+So, we bypass Ordinary Least Squares and move straight to Maximum Likelihood. The likelihood function has also become complicated, so we avoid trying to code the model in bbmle (unless you are feeling very brave!). Instead, we rely on the generosity of the experts, who have created the `lme4` library. For models with Normally distributed deviance, we can also use the `nlme` library. Here we focus on `lme4` because of its flexibility with generalized models.
+
+`lme4` uses an approach called "Restricted Maximum Likelihood" (REML) to fit its mixed-effects models. In a nutshell, the model fitting alternates between optimising the fixed effects component of the model, and the random effects component. This is an iterative process with some unpleasant side effects (for the frequentist, at least!).
+
+  - It is very sensitive to the structure of the model. Models must be stated correctly if they are to make any sense. Model "degeneracy" is a common issue associated with models that have badly defined random effects. This is a particular problem for random effects with not many (fewer than 5) categories. Modeller beware of uninterpetable error messages!
+  - Fixed effects, fitted using REML, cannot be tested for significance using model simplification. This is because the updated model will also be fit using an interative procedure, so the outcome is not simply the "removal" of one of its terms. The models should be fit via REML, then converted to Maximum Likelihood, then compared using Likelihood Ratio tests.
+  
+  We recommend a paper: Harrison et al (2018) A brief introduction to mixed effects modelling and multi-model inference in ecology. PeerJ. That paper covers several of these issues.
+  
+###(Restricted) Maximum Likelihood
+The `lme4` package uses functions `lmer` for Gaussian response variables, and `glmer` for generalized error families. If you're happy to ignore warning messages, then glmer can be used all the time. The trick with phrasing mixed-effects models is to describe the fixed effects just like you always have done in `glm`, and to introduce random effects as `+(1|predictor)` or `+(covariate|predictor)`. The former describes an intercept-only random effect (in which the intercept of the regression has a variance associated with different random effect categories). In other words, the intercept is actually a Normal distribution of intercepts of Postcode-specific values, spread around a global intercept. The latter is a random slopes model, in which both the intercept and slope of y~covariate have variances associated with the random effect. In other words, both the intercept and slope of the model are Normal distributions of Postcode-specific values, spread around global values. Here goes...
+
+
+```{r warning=FALSE, message=FALSE}
+library(lme4)
+#random intercepts model
+m1<-glmer(Height~Occ*Wealth+(1|PC),data=v_data,family=gaussian)
+summary(m1)
+#random slopes model
+m2<-glmer(Height~Occ*Wealth+(Wealth|PC),data=v_data,family=gaussian)
+summary(m2)
+```
+
+The summaries of these two models are rich in information. The "Random Effects" section tells us how much variation is absorbed by the random effects, and how much is left over. Variances are additive, so it's possible to state what proportion of the variance is due to the random effects, and how much is left over.
+
+```{r warning=FALSE, message=FALSE}
+#extract the variances etc from the model
+var.decomp<-as.data.frame(VarCorr(m2))
+#work out each variance as a proportion of the total
+var.decomp$vd<-var.decomp$vcov/sum(var.decomp$vcov[c(1,2,4)])
+#miss out the "covariance" term, because we just want variances
+var.decomp[c(1,2,4),]
+```
+
+So, looking at the "vd" column here, you'll see that variation in the intercept, among postcodes, accounts for 47% of the noise; variation in the slope among postcodes accounts for hardly any noise at all, and the residual variation is 53% of the total variation not explained by the model. We can test whether the inclusion of a random slope is significant, using a likelihood ratio test, which is Chi-square distributed.
+
+```{r warning=FALSE, message=FALSE}
+anova(m1,m2)
+```
+
+And so there is effectively zero suggestion that random slopes are required in this model.
+
+We can now move on to simplify (using frequentist logic and model simplification) the fixed effects part of the model. This approach will convert the model from REML to Maximum Likelihood. Modeller beware...this can introduce Type I errors.
+
+```{r warning=FALSE, message=FALSE}
+m1.1<-update(m1,~.-Occ:Wealth)
+anova(m1,m1.1)
+m1.2<-update(m1.1,~.-Occ)
+anova(m1.1,m1.2)
+m1.3<-update(m1.1,~.-Wealth)
+anova(m1.3,m1.1)
+```
+
+And so it turns out that the inclusion of spatial structure, using postcode as a random intercept, helps reveal a relationship between Pisky Height and Pisky Wealth, over and above the clear effect of Occupation on Height. Using the `predict` function to help with fitted lines is tricky here, because the model wants to know which Postcode we want to `predict` for. Instead, we use the model coefficients to fit the postcode-independent fitted lines.
+
+```{r warning=FALSE, message=FALSE}
+mam<-glmer(Height~Wealth+Occ+(1|Postcode),data=v_data)
+summary(mam)
+plot(Height~Wealth,data=v_data,type="n")
+points(Height~Wealth,data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="green")
+points(Height~Wealth,data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="blue")
+points(Height~Wealth,data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="black")
+points(Height~Wealth,data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="red")
+fake.wealth<-seq(min(v_data$Wealth),max(v_data$Wealth),length.out=1000)
+pred.farm<-fixef(mam)[1]+fixef(mam)[2]*fake.wealth
+pred.fish<-fixef(mam)[1]+fixef(mam)[3]+fixef(mam)[2]*fake.wealth
+pred.mine<-fixef(mam)[1]+fixef(mam)[4]+fixef(mam)[2]*fake.wealth
+pred.smuggle<-fixef(mam)[1]+fixef(mam)[5]+fixef(mam)[2]*fake.wealth
+
+lines(pred.farm~fake.wealth,lwd=3,col="green")
+lines(pred.fish~fake.wealth,lwd=3,col="blue")
+lines(pred.mine~fake.wealth,lwd=3,col="black")
+lines(pred.smuggle~fake.wealth,lwd=3,col="red")
+```
+
+Hopefully that's convincing evidence that the inclusion of a random effect, here describing spatial non-independence of observations, can affect our conclusions regarding the IMPORTANCE of parameters and the testing of hypotheses. We should also check the Goodness of Fit of our model. It;'s possible to calculate the "pseduo-R-squared" of our model but we won't cover that here. It's linked to the variation explained by the model and the residual variation left once the random effects have been absorbed. Here, we will just check our assumptions of Normality and Homoscedasticity of residuals. The extra challenge for Mixed Effects models is that residuals should be Normal and Homoscedastic not just overall, but also within and among the levels of the random effect.
+
+###Homoscedasticity of residuals
+**Overall**
+```{r warning=FALSE, message=FALSE}
+plot(mam)
+```
+
+**Within and among random effect categories
+Our first attempt demonstrates a challenge of mixed effects models...sometimes the sample size per category of the random effect is simply too small to allow us to judge homoscedasticity and Normality. We use a useful co-plot function from `lme4` to give separate resodiual plots per category of Postcode. Each subplot, contains too few data to draw sensible conclusions, so we also "group" postcodes into their major groupings (stored in `v_data$PC`).
+
+```{r warning=FALSE, message=FALSE}
+plot(mam, resid(., scaled=TRUE) ~ fitted(.) | Postcode, abline = 0)
+plot(mam, resid(., scaled=TRUE) ~ fitted(.) | PC, abline = 0)
+```
+
+Overall, the residuals share similar variance accross fitted values. There is a suggestion that the PL30 and EX20 villages might vary less than the others, but the sample sizes are small so I feel fairly happy that the assumption of homoscedasticity is justified.
+
+###Normality of residuals
+**Overall**
+
+```{r warning=FALSE, message=FALSE}
+qqnorm(resid(mam))
+```
+
+And we leave the challenge of plotting qqnorms for each separate category of postcode.
+
+##Information Theoretic Approach
+Just like with GLM and GzLM, we can use information-loss and multi-model inference to help us understand the drivers of Pisky Height.
+
+```{r warning=FALSE, message=FALSE}
+#model averaging and confidence intervals
+library(MuMIn)
+m1.mem<-glmer(Height~scale(Wealth)*Occ+(1|Postcode),data=v_data,na.action="na.fail")
+dredge.m1<-dredge(m1.mem)
+dredge.m1
+coeff<-model.avg(dredge.m1,subset=delta<20)
+modav.betas<-coefTable(coeff)
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+```
+
+With several parameters to consider, we can plot them and their confidence intervals to help with our judgement of importance. This is a rare example of plotting the response variable on the x-axis. We draw a vertical line at zero to help us see whether teh confidence intervals span zero (if they do, there is a strong suggestion that that parameter is not informatively different from zero):
+
+```{r warning=FALSE, message=FALSE}
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+mod.names<-rownames(modav.betas)
+ddd<-barplot(modav.betas[,1],horiz=T,xlim=c(-6,5),col="white",border="white", names.arg=mod.names,las=1)
+mtext("model-averaged effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(modav.ci[,1],ddd,modav.ci[,2],ddd,code=3,angle=90,length=0.1)
+points(modav.betas[,1],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+This appears to confirm our frequentist conclusions...that Height is determined by Occupation, and declines with increasing Wealth, but with no interaction between these predictors.
+
+
+##Bayesian Analysis of a Mixed-Effects Model
+Bayesian analysis shows some real strengths here, but also some real challenges. The code is more complex, and the analysis is quite sensitive to initial conditions. On the other hand, the code forces us to really understand what the analysis is doing. For each observation, we infer Height using a linear combination of the FIXED effects, but we also add uncertainty in the form of a deviance based on the postcode of the Village. We source this extra deviance from the fitting of a Normal distribution to the postcode-specific intercepts. This additonal effect of postcode is called "gamma" here, and has a standard deviation called sigma_pc. The residual (i.e. unexplained) variation is also Normally distributed and has standard deviation sigma. The JAGS code includes two loops...one for the inference of each datapoint, and one for the inference of the postcode-specific intercepts. **Modeller beware** we have also decided here to SCALE the response variable to have zero mean and unit variance. If we wish to make PREDICTIONS based on this moedel, we will have to back-tranfsform our predictions, multiplying by the standard deviation of Height, and adding the mean Height. Scaling really helps to stabilise the inference, but can cause headaches later.
+
+```{r warning=FALSE, message=FALSE}
+###Bayesian Gaussian mixed model
+y<-as.numeric(scale(v_data$Height))
+mm1<-model.matrix(~Wealth+Occ,data=v_data)
+{sink("GzLM.jags")
+  cat("
+      model {
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var)
+    mu[i] <- beta[1]*x[i,1]+beta[2]*x[i,2]+beta[3]*x[i,3]+beta[4]*x[i,4]+beta[5]*x[i,5]+gamma[postcode[i]]
+  }
+
+  # Priors
+  sigma_pc~dunif(0,100)
+  inv.var_pc<-1/(sigma_pc*sigma_pc)
+  for(j in 1:n.postcodes){
+   gamma[j] ~ dnorm(0,inv.var_pc)
+  }
+  for(k in 1:5){
+   beta[k] ~ dnorm(0,0.001)
+  }
+
+  # Prior for the inverse variance
+  sigma~dunif(0,100)
+  inv.var<-1/(sigma*sigma)
+
+}",fill = TRUE)
+sink()
+}
+
+init_values <- function(){
+  list(beta = rnorm(5),sigma=runif(1),sigma_pc=runif(1))
+}
+
+params <- c("beta","sigma","sigma_pc")
+
+m1.MCMC <- jags(data = list(y=y,x=mm1,n=length(y),postcode=v_data$Postcode,n.postcodes=length(levels(v_data$Postcode))), inits = init_values, parameters.to.save = params, model.file = "GzLM.jags", n.chains = 3, n.iter = 20000, n.burnin = 2000, n.thin = 10, DIC = F)
+
+print(m1.MCMC)
+```
+
+Here we plot the parameters and their 95% credible intervals. We hoped that scaling the response variable might help to clarify the slope of Height against Wealth. But, the problem remains...even though the slope's credible interval does not span zero, it's so small that the plot does not help to see this.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-3,3),col="white",border="white", names.arg=c(colnames(mm1),"sigma_pc","sigma"),las=1)
+mtext("MCMC 95% credible interval",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+
+###Convergence check for this model
+```{r warning=FALSE, message=FALSE,cache=T}
+traceplot(m1.MCMC)
+```
+
+##Mixed Effects Models for Non-Normal Responses
+A heated row has erupted between two Piskyologists. One insists that the data suggests Village sex ratios depend on the presence of a Plen-an-Gwarry (her argument is that female piskies aggregate in villages with good governance structures, as exemplified by the Plen-an-Gwarry meeting place). The other insists that there is no such female-bias in villages with meeting places. His argument is that female piskies are not involved in Pisky politics. The data strongly favour the former pattern, but the denier is a skilled statistician and continually criticises the models used to analyse the relationship between sex ratio and Plen-an-Gwarry.
+
+Let's see how the argument unfolds...
+
+###Binomial GLM of sex ratio against Plen-an-Gwarry
+
+```{r warning=FALSE, message=FALSE,cache=T}
+prop.fem<-v_data$Females/v_data$Pop
+per.PaG<-aggregate(prop.fem~PaG,data=v_data,mean)
+per.PaG$var<-aggregate(prop.fem~PaG,data=v_data,var)$prop.fem
+per.PaG$n<-aggregate(prop.fem~PaG,data=v_data,length)$prop.fem
+per.PaG$std.err<-sqrt(per.PaG$var/per.PaG$n)
+dd<-barplot(per.PaG$prop.fem,names.arg=c("No","Yes"),xlab="Plen-an-Gwarry",ylab="Proportion female",ylim=c(0,1))
+arrows(dd,per.PaG$prop.fem-per.PaG$std.err,dd,per.PaG$prop.fem+per.PaG$std.err,code=3,angle=90,length=0.1)
+```
+
+**Author**: Our barplot of means and standard errors of sex ratios clearly demonstrates a difference in the proportion females in villages with and without a Plen-an-Gwarry
+
+**Critic**: The difference is tiny and simply not real. You have calculated standard errors based on a false assumption of Normal distribution, and provided no evidence for the significance or importance of this difference. I do not believe it.
+
+**Improvement:**
+```{r warning=FALSE, message=FALSE,cache=T}
+v_data$sr<-cbind(v_data$Females,v_data$Pop-v_data$Females)
+v_data$Pag<-factor(v_data$PaG)
+m1<-glm(sr~PaG,family=binomial,data=v_data)
+summary(m1)
+m2<-update(m1,~.-PaG)
+anova(m1,m2,test="Chi")
+```
+
+**Author**: The presence of a Plen-an-Gwarry has a positive and significant impact on the proportion of female Piskies in villages (Generalized linear model with binomial error structure, $\chi^2_1 = 9.935, P = 0.002$).
+
+**Critic**: But your model is overdispersed. This tends to inflate significance.
+
+Improvement:
+
+```{r warning=FALSE, message=FALSE,cache=T}
+v_data$sr<-cbind(v_data$Females,v_data$Pop-v_data$Females)
+v_data$Pag<-factor(v_data$PaG)
+m1<-glm(sr~PaG,family=quasibinomial,data=v_data)
+summary(m1)
+m2<-update(m1,~.-PaG)
+anova(m1,m2,test="F")
+```
+
+**Author**: The presence of a Plen-an-Gwarry has a positive and significant impact on the proportion of female Piskies in villages (Generalized Linear Model with quasipoisson error structure $F_{1,58} = 5.147, P = 0.027$).
+
+**Critic**: But the frequentist approach to hypothesis testing is outdated.
+
+Improvement:
+
+```{r warning=FALSE, message=FALSE,cache=T}
+library(MuMIn)
+m1<-glm(sr~PaG,family=binomial,data=v_data,na.action="na.fail")
+m2<-glm(sr~1,family=quasibinomial,data=v_data,na.action="na.fail")
+dredge.m1<-dredge(m1)
+dredge.m1
+coeff<-model.avg(dredge.m1)
+modav.betas<-coefTable(coeff)
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+mod.names<-rownames(modav.betas)
+ddd<-barplot(modav.betas[,1],horiz=T,xlim=c(-1,1),col="white",border="white", names.arg=mod.names,las=1)
+mtext("model-averaged effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(modav.ci[,1],ddd,modav.ci[,2],ddd,code=3,angle=90,length=0.1)
+points(modav.betas[,1],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+**Author**: We use information theory and multi-model inference to demonstrate that the presence of a Plen-an-Gwarry informs our ability to predict the sex ratio of Pisky villages, with a delta-AIC of `r AIC(m1)-AIC(glm(sr~1,data=v_data,family=binomial))`
+
+**Critic**: Nice modelling (I suppose), but you've already shown me that the data is overdispersed, hence the binomial error structure is invalid to help you with your inference. Please try again with a quasi-binomial error structure.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+m1<-glm(sr~PaG,family=quasibinomial,data=v_data,na.action="na.fail")
+AIC(m1)
+```
+
+**Author**: I'm afraid that the use of "quasi" error structures prevents us from studying the Information COntent of our model using standard Maximum Likelihood analyses.
+
+**Critic**: Ha! Then your analysis is clearly flawed. Furthermore I believe that what you have shown is not an effect of Plen-an-GWarry, but a simple difference based on the locations of your villages.
+
+Improvement:
+
+```{r warning=FALSE, message=FALSE,cache=T}
+library(lme4)
+m1<-glmer(sr~PaG+(1|Postcode),family=binomial,data=v_data)
+summary(m1)
+m2<-update(m1,~.-PaG)
+anova(m1,m2)
+```
+
+**Author**: A mixed effects model demonstrates that spatial location accounts for only a small amount of variation in our data. Having controlled for that variation, there remains a significant influence of Plen-an-Gwarry on the proportion female of the Pisky villages (Mixed-effects model with binomial error structure, `$\chi^2_1 = 6.380, P = 0.012$).
+
+**Critic**: Utter nonsense. You have captured some of the extra-binomial variation in your data, using a spatial random effect, but there is no evidence here to suggest that you have dealt with the overdispersion. The difference is simply not real. 
+Improvement:
+
+[here's a really interesting trick associated with overdispersion in Mixed Effects models. If extra-binomial variance exists, then it can be "absorbed" by fitting an "individual-level random effect", which fits a Normal distribution to the extra-binomial variation, hence absorbing it and leaving behind the binomial process.]
+
+```{r warning=FALSE, message=FALSE,cache=T}
+m1<-glmer(sr~PaG+(1|Postcode)+(1|ID),family=binomial,data=v_data)
+summary(m1)
+m2<-update(m1,~.-PaG)
+anova(m1,m2)
+```
+
+**Author**: We have absorbed the extra-binomial variation using an individual-level random effect. This random effectaccounts for far more noise than the spatial randmom effect of postcode. Having absorbed this overdispersion, there remains a significant effect of Plen-an-Gwarry on Pisky sex ratios (`$\chi^2_1 = 4.758, P = 0.029$).
+
+**Critic**: That's a nice trick, but I remain unconvinced. You haven't even shown me that the residuals are Normally distributed, and Homoscedastic.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+m1<-glmer(sr~PaG+(1|Postcode),family=binomial,data=v_data)
+plot(m1)
+plot(m1, resid(., scaled=TRUE) ~ fitted(.) | PC, abline = 0)
+qqnorm(resid(m1))
+```
+
+**Author**: Our mdoel check plots convince us that the residuals are Homoscedastic (both among and within postcodes) and Normally distributed. Do you believe us now?
+
+**Critic**: Actually, no. So far all you've shown me is the probability of finding your signal, given that the null hypothesis is TRUE. What I want to see is the probability of your hypothesis being TRUE, given your data.
+
+**Author** [sigh]: OK fair enough.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+{sink("GzMEM.jags")
+  cat("
+      model {
+  # Likelihood
+  for(i in 1:n){
+	y[i] ~ dbin(p[i],total[i])
+      p[i] <- 1/(1+1/exp(beta0 + beta1*x[i]+gamma1[postcode[i]]))
+      }
+
+  # Priors
+  sigma_pc~dunif(0,100)
+  inv.var_pc<-1/(sigma_pc*sigma_pc)
+  for(j in 1:n.postcodes){
+   gamma1[j] ~ dnorm(0,inv.var_pc)
+  }
+   beta0 ~ dnorm(0,0.001)
+   beta1 ~ dnorm(0,0.001)
+
+}",fill = TRUE)
+sink()
+}
+
+init_values <- function(){
+  list(beta0 = rnorm(1),beta1=rnorm(1),sigma_pc=runif(1))
+}
+
+params <- c("beta0","beta1","sigma_pc")
+
+m1.MCMC <- jags(data = list(total=v_data$Pop,y=v_data$Females,x=v_data$PaG,n=length(v_data$Females),postcode=v_data$Postcode,n.postcodes=length(levels(v_data$Postcode))), inits = init_values, parameters.to.save = params, model.file = "GzMEM.jags", n.chains = 3, n.iter = 20000, n.burnin = 2000, n.thin = 10, DIC = F)
+
+print(m1.MCMC)
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-1,1),col="white",border="white", names.arg=c("beta0","beta1","sigma_pc"),las=1)
+mtext("MCMC 95% credible interval",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+**Author**: We have shown, using a Bayesian Mixed Effects model, that the 95% credible interval, for the influence of Plen-an-Gwarry on the sex ratio of Pisky villages, does not span zero.
+
+**Critic**: Very impressive, but I've scrutinised your code and it reveals that you have not dealth with the overdispersion that you admitted to earlier. Spatial patterns do not absorb this extra variance, therefore sex ratio is not a binomial process and your conclusions cannot be trusted.
+
+**Author**: Quite right. Luckily the Bayesian approach is very flexible and we can include an individual-level random effect to absorb the extra-binomial variation.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+{sink("GzMEM.jags")
+  cat("
+      model {
+  # Likelihood
+  for(i in 1:n){
+	y[i] ~ dbin(p[i],total[i])
+      p[i] <- 1/(1+1/exp(beta0 + beta1*x[i]+gamma1[postcode[i]]+gamma2[ID[i]]))
+	gamma2[i]~dnorm(0,inv.var_ID)
+      }
+
+  # Priors
+  sigma_ID~dunif(0,100)
+  inv.var_ID<-1/(sigma_ID*sigma_ID)
+
+  sigma_pc~dunif(0,100)
+  inv.var_pc<-1/(sigma_pc*sigma_pc)
+  for(j in 1:n.postcodes){
+   gamma1[j] ~ dnorm(0,inv.var_pc)
+  }
+   beta0 ~ dnorm(0,0.001)
+   beta1 ~ dnorm(0,0.001)
+
+}",fill = TRUE)
+sink()
+}
+
+init_values <- function(){
+  list(beta0 = rnorm(1),beta1=rnorm(1),sigma_pc=runif(1),sigma_ID=runif(1))
+}
+
+params <- c("beta0","beta1","sigma_pc","sigma_ID")
+
+m1.MCMC <- jags(data = list(ID=v_data$ID,total=v_data$Pop,y=v_data$Females,x=v_data$PaG,n=length(v_data$Females),postcode=v_data$Postcode,n.postcodes=length(levels(v_data$Postcode))), inits = init_values, parameters.to.save = params, model.file = "GzMEM.jags", n.chains = 3, n.iter = 20000, n.burnin = 2000, n.thin = 10, DIC = F)
+
+print(m1.MCMC)
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-1,1),col="white",border="white", names.arg=c("beta0","beta1","sigma_pc","sigma_ID"),las=1)
+mtext("MCMC 95% credible interval",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+opar<-par(mfrow=c(4,1),mar=c(4,5,1,1))
+d.beta0<-density(m1.MCMC.dat$beta0)
+plot(d.beta0,type="n",xlab="beta0",main="")
+polygon(d.beta0,col="blue")
+d.beta1<-density(m1.MCMC.dat$beta1)
+plot(d.beta1,type="n",xlab="beta1",main="")
+polygon(d.beta1,col="blue")
+d.sigma_pc<-density(m1.MCMC.dat$sigma_pc)
+plot(d.sigma_pc,type="n",xlab="sigma_pc",main="")
+polygon(d.sigma_pc,col="blue")
+d.sigma_ID<-density(m1.MCMC.dat$sigma_ID)
+plot(d.sigma_ID,type="n",xlab="sigma_ID",main="")
+polygon(d.sigma_ID,col="blue")
+par(opar)
+```
+
+**Author**: Do you believe us now?
+
+**Critic**: You nearly have me beaten. But you still haven't provided evidence that the MCMC chains converged in your Bayesian analysis.
+
+**Author**: [sigh]
+
+```{r warning=FALSE, message=FALSE,cache=T}
+traceplot(m1.MCMC)
+```
+
+**Critic**: OK so now I need to see what the Bayesian model predicts in terms of the sex ratio of villages with and without a Plen-an-Gwarry.
+
+**Author**: No problem!
+
+```{r warning=FALSE, message=FALSE,cache=T}
+#remember that we have inferred the DIFFERENCE in sex ratio between villages with and without Plen-an-Gwarry. To get the full posterior for villages with, and without, a PaG, we need to do arithmetic for each iteration of the coda. This cleverly deals with any possible covariance among the inferred parameters at each iteration.
+sr.with<-numeric(dim(m1.MCMC.dat)[1])
+sr.without<-numeric(dim(m1.MCMC.dat)[1])
+for(i in 1: length(sr.with)){
+sr.without[i]<-1/(1+1/exp(m1.MCMC.dat$beta0[i]))
+sr.with[i]<-1/(1+1/exp(m1.MCMC.dat$beta0[i]+m1.MCMC.dat$beta1[i]))}
+sr.with.posterior<-density(sr.with)
+sr.without.posterior<-density(sr.without)
+plot(sr.with.posterior,type="n",xlim=c(0.4,0.8),xlab="Posterior sex ratio",main="")
+polygon(sr.without.posterior,col=rgb(1,0,0,0.5))
+polygon(sr.with.posterior,col=rgb(0,0,1,0.5))
+legend("topleft",bty="n",legend=c("Without Plen-an-Gwarry","With Plen-an-Gwarry"),fill=c("red","blue"))
+
+```
+
+**Critic**: Fine. Of course, I always knew that the Plen-an-Gwarry was associated with greater female bias in Pisky villages. However I also believe that this is due to a relationship between Plan-an-Gwarry and village Occupation...
+
+**Author**: [sigh]
+

@@ -1,0 +1,404 @@
+---
+title: "Applied Data Analysis in R"
+subtitle: "Practical 3: Goodness of Fit"
+author: "Dave Hodgson & Matthew Silk"
+date: "16 June 2018"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,cache=TRUE)
+```
+
+##Goodness of Fit
+We have used a set of statistical engines to infer the parameters of a linear regression between y and x. We have then used a set of algorithms to consider and describe the "importance" of this linear regression model. We have considered the determination of the linear model; its predictive power; our confidence in the parameters; the significance of the linear regression hypothesis, the information content of the linear regression, and the credibility of the parameters.
+
+Several of these engines and algorithms obliged us to make assumptions about the data, the model and (particularly) its residuals. We have not yet considered whether these assumptions are valid. If they are not valid, then our inference is also not valid. Tests of the assumptions of the model are just as important as doing the modelling. We call it "Goodness of Fit".
+
+Goodness of Fit is not just testing assumptions. We can also find out how sensitive our inference is to the data, and (for Bayesian analyses) to our assumptions of prior information. This is called internal validation. We can also ask whether the model is successful at predicting new data. This is called external validation.
+
+First let's set up our R session as per the previous two. We simulate a relationship between average number of pet hedgehogs per pisky household, and average number of pisky children per household. The dataset is then a survey of ten pisky villages. We also load in all the R libraries that we intend to use.
+
+##Getting started: Simulate data and set-up
+```{r warning=FALSE, message=FALSE}
+
+library(nimble)
+library(coda)
+library(boot)
+library(bbmle)   ##this has mle2 in
+
+beta0 <- 1
+beta1 <- 0.5
+std.dev <- 0.3
+n <- 10
+#Draw n samples from a uniform distribution defined by its limits, zero and three
+x <- runif(n, 0, 3)
+#Calculate the response variable for each value of x, based on a linear relationship. Draw n samples from a Normal distribution with mean zero and simulated standard deviation, and add these values to the linear relationship to represent "noise".
+y<-beta0+beta1*x+rnorm(n,0,std.dev)
+#Plot the relationship between y and x. Because y is a continuous variable, and so is x, the default plot is a scatterplot. We start with an empty set of axes (type="n"), and then add the data separately, giving us finer control of the plot's appearance. To see more detail on the subcommands, type ?par and look through the options.
+plot(y~x,type="n",xlim=c(0,3),ylim=c(0.5,3),cex.lab=2)
+
+#having created an empty set of axes, add the points. Again, see ?par to understand the subcommands.
+points(y~x,pch=16,cex=2)
+```
+
+##Summary
+###* Check the validity of assumptions made when fitting the model.
+###* Internal validation (including checking for the leverage of particular points) of the model
+###* External validation of the model (ability to predict new data)
+###* Data validation (simulate from the model and compare with observed data)
+###* (*Bayesian only*) Model convergence and sensitivity to priors
+
+##Checking model assumptions
+Remember that the assumptions of many linear regression models are:
+  1. The residuals of the model are Normally distributed.
+  2. All residuals share the same variance.
+  3. The residuals are independent of one another.
+  4. Data has been sampled at random and without bias.
+  5. The linear model is relevant.
+  
+###Assumption 1: Residuals are Normally distributed
+We check this assumption by extracting the residuals from the model, and compare their values to an "ideal" normal distribution. Two graphical methods tend to be used. First, a simple histogram of the residuals (ask: are they symmetrical around zero? Is the distribution bell-shaped?). Second, a `qqnorm` plot is used, which ranks the residuals from smallest to largest and compares them to what would be expected from an idealised Normal distribution: the points should fall along a straight line.
+```{r warning=FALSE, message=FALSE}
+m1<-lm(y~x)
+m0<-lm(y~1)
+#You can extract the residuals like this
+residuals1<-resid(m1)
+residuals0<-residuals(m0)
+#note that the code can be different depending on the type of model you are using
+
+#We can check our assumption graphically in two ways
+#1. A histogram of the residuals
+hist(residuals1)
+#2.A qqplot of the residuals
+#In the qqplot the points should be linear and fall along the dotted line
+qqnorm(residuals1)
+qqline(residuals1)
+```
+
+###Assumption 2: Homogeneity of variance (AKA "Homoscedasticity")
+We have assumed that the variance in the residuals does not depend on the fitted value of y. In other words, the residuals are random samples from a Normal distribution whose variance is the same for ALL the observations, regradless of whether y's inferred value is large or small. To check this, we extract the fitted values from the model as well. A simple scatterplot of residuals against fitted values should help us see whether variance is the same for all fitted values. A useful rule of thumb is that this should look like the "sky at night". Focus your attention on the y-axis. Clumps or patterns along the x-axis are nothing to do with this assumption.
+
+```{r warning=FALSE, message=FALSE}
+fitted1<-fitted(m1)
+plot(residuals1~fitted1)
+```
+
+##Assumption 3: Independence of Residuals
+This assumption is difficult to test using code. It is a feature of the experimental or survey design. Is there any fundamental reason to expect that the data, and their residuals, are "clumped" somehow into groups, or distributed across a spatial, temporal or evolutionary landscape that makes them non-independent. Examples might include:
+  - Large villages might be over-represented in the sample, and might share certain features that favour ownership of hedgehogs.
+  - Villages might lie on a landscape, with natural geographical variation in the abundance of hedgehogs.
+  - Neighbouring villages might share Pisky lineages, that vary in their proclivity for owning hedgehogs.
+  - Villages may have been surveyed through time, and hedgehog ownership might be changing in popularity.
+  
+The tools for testing spatial, temporal or phylogenetic structuring in residuals are available, but we will reserve them for later practicals. The researcher needs to be aware of non-independence, and must either acknowledge it if it exists, or avoid it through careful experimental and survey design.
+
+##Assumption 4: Random Sampling and Lack of Bias
+Again, there is not much that can be done to "test" this assumption objectively. The researcher must always be careful to collect unbiased evidence. If random sampling of independent units cannot be achieved, then the non-randomness must be included in the statistical  model.
+
+##Assumption 5: A linear model is relevant
+Our hypothesis is that a linear relationship exists between y and x, such that y = beta0 + beta1 * x + noise. In reality, there might be a relationship between y and x but it might not be linear. Perhaps y increases as an accelerating function of x. Or a decelerating one. Or a wiggly one.
+
+This assumption can be checked graphically, in two ways. First, a plot of y against x, with the linear model superimposed, will allow the analyst to check whether residuals are patterned or clumped above and below the line. Second, our plot of residuals against fitted values will also help us to see clumps and patterns.
+
+<center>
+
+![Figure 1: Examples of residuals versus fitted values plots. Left plot shows homoscedastic residuals (good). Middle plot shows that variance increases with increasing fitted value (bad). Right plot shows that residuals are patterned from negative to positive to negative, hinting at a nonlinear relationship between y and x](resids vs fits.png)
+<center>
+
+##Internal validation (sensitivity of the inference to the data)
+
+Leverage is a feature of a single observation, and describes what happens to the inference when that observation is dropped from the dataset. This might be expressed as the raw change in the inferred parameters:
+
+```{r warning=FALSE, message=FALSE}
+leverage.beta0<-numeric(n)
+leverage.beta1<-numeric(n)
+beta0.obs<-coef(lm(y~x))[1]
+beta1.obs<-coef(lm(y~x))[2]
+#here we loop through each data row, drop it and fit the model again. We measure the impact of dropping each data row on the parameters of the model.
+for(i in 1:n){
+  y.drop<-y[-i]
+  x.drop<-x[-i]
+  leverage.beta0[i]<-coef(lm(y.drop~x.drop))[1]-beta0.obs
+  leverage.beta1[i]<-coef(lm(y.drop~x.drop))[2]-beta1.obs
+}
+plot(leverage.beta1~leverage.beta0)
+```
+
+This plot displays an important message. Each observation varies in its influence on the inference made by the linear regression. In general, we are likely to observe a negative relationship between the leverage of an observation on the intercept, and its leverage on the slope. Why? Remember that the linear regression "hinges" on the mean of y and the mean of x. If the slope increases (gets more positive) then the intercept tends to decrease. This is true if the mean of x is greater than zero. So, there is a subtle interplay between the influence of each observation on the mean of x, the mean of y, the intercept and the slope.
+
+This is one of the reasons why many modellers prefer to scale their data so that the mean of x becomes zero. But it doesn't get rid of the leverage problem completely.
+
+Lots of work has helped us to standardise our measures of leverage, and the sensitivity of our inference to individual observations. Perhaps the most famous index of leverage is Cook's Distance, which measures the leverage of each observation relative to the residual noise in our model. https://en.wikipedia.org/wiki/Cook%27s_distance
+
+Whenever we fit a simple linear model using `lm(y~x+...)` or `glm(y~x+...)`, we can "check" the model for influential datapoints.
+
+```{r warning=FALSE, message=FALSE}
+plot(m1,which=5)  #Cooks's distance < 1 is normally considered to be OK 
+plot(m1,which=4)
+
+##-----------------------------------------------
+```
+
+In general, Cook's Distance is considered OK if it is less than one. If some observations have Cook's Distance > 1, then the modeller is faced with a difficult choice. The best first step is to check back to the data-collection notes to make sure that the observations are not errors. If the data are "correct", then we have evidence that the model is badly specified. Model check plots should be checked for Normality and homoscedasticity, and the assumption of linearity should also be considered carefully. 
+
+R's linear modelling functions provide useful defaults for model checking. The simple `plot(model)` function offers four standard plots that allow the user to check for Normality, homoscedasticity, leverage and Cook's distances. 
+
+```{r}
+#a trisk: to get a single figure that includes several subplots, set the graphical parameter `par` to include `mfrow=c(rows,columns)`
+opar<-par(mfrow=c(2,2))
+plot(m1)
+par(opar)
+```
+
+Top left is the check for homoscedasticity (residuals vs fits). Top right is the qqnorm check for Normality (of residuals). Bottom left provides a measure of the absolute values of the residuals against the fitted values. Bottom right is the check of leverage, which often comes with contours of Cook's distances. Bottom left is perhaps only rarely considered...but the other three are critical for any regression model.
+
+A common question for novice modellers is "how bad is bad?" There is no correct answer to this question. Examples are available in research papers (biased towards the good ones, naturally), and on websites. If the model checks cast doubt on the distribution of the residuals, then the modeller must try to fix the issues, using scrutiny of the raw data, consideration of data transformations, alternative error structures or the possibility of non-independent residuals. Sometimes more data is required to "heal" gaps or clusters in the distribution of residuals, and to tame the leverage of unusual data. Keep calm and try again. 
+
+##Cross-validation and external validity
+General cross-validation approaches leave out part of the dataset, fit a model to the rest and then try and predict the data that has been left out
+
+We will show the potential value of this quickly here by fitting a regression to half of our data, then seeing how well the predictions match the other half. The answer is likely to be "very badly" because our dataset is so small (only 10 observations).
+
+Here, we have chosen to study the cross-validation results by comparing the residual sums of squares for the predicted values, to their residual sum of squares had they been included in the regression model. Other options are available.
+
+```{r}
+
+#Create subsetted data
+y.sub<-y[1:5]
+x.sub<-x[1:5]
+
+#Refit models to subset data
+m1.sub<-lm(y.sub~x.sub)
+
+#We are now going to use the predict function for linear models in R. This takes a new set of x values and predicts using the model
+pred1.sub<-predict(m1.sub,newdata=list(x.sub=x[6:10]))
+
+#And use sum of squares to compare how well these two models have predicted the "new" data
+#first, the model that used only the first five observations
+SS.sub<-sum(y[6:10]-pred1.sub)^2
+#second, the model that used all the data
+SSresidual<-sum((y[6:10]-predict(m1)[6:10])^2)
+
+print(c(SS.sub,SSresidual))
+
+
+```
+
+If the sum of squares for the test data is much bigger than the sum of squares for the same data when included in the model, then the model is not predicting well.
+
+##Compare simulated and observed data
+Perhaps the most fundamental way to check that the model is a sensible simplification of reality, is to use the inferred parameters to simulate datasets, and compare these to the observed data that helped us to infer the model in the first place. This technique is gaining traction in the life sciences, but methods that "check" the goodness of fit are not well known. Here we simply suggest a method for comparing the observed data to simulated datasets.
+
+We have used various methods to infer the parameters of our model. If we choose Ordinary Least Squares, then we have our intercept, slope and residual standard error, sourced from `summary(m1)`. If we choose a maximum likelihood approach then we have maximum likelihood inference of the three parameters intercept, slope and sigma. If we choose a Bayesian approach then we have posterior modes for intercept, slope and sigma. Here we will use the maximum likelihood inference, just as an example.
+
+```{r warning=FALSE, message=FALSE}
+log.likelihood<-function(b0,b1,sigma){
+  if(sigma < 0) {deviance <- 10000000}
+  if(sigma > 0) {
+    likelihoods <- dnorm(y, mean = b0+b1*x,
+                         sd=sigma)
+    log.likelihoods<-log(likelihoods)
+    deviance<- -2 * sum(log.likelihoods)
+  }
+  return(deviance)
+}
+m1.ML <- mle2(log.likelihood, start = list(b0 = 0.5, b1 = 0.5, sigma=1))
+summary(m1.ML)
+coef(m1.ML)
+```
+
+Now, we can simulate lots of datasets, and use an overplotting trick to create a heat map of simulated outcomes.
+
+```{r warning=FALSE, message=FALSE}
+sims.y<-array(0,dim=c(1000,n))
+sims.x<-array(0,dim=c(1000,n))
+for(i in 1:dim(sims.y)[1]){ #'dim' is short for 'dimensions, and counts the number of rows then columns etc of arrays
+sims.x[i,]<-runif(n,min(x),max(x))
+sims.y[i,]<-coef(m1.ML)[1]+coef(m1.ML)[2]*sims.x[i,]+rnorm(n,0,coef(m1.ML)[3])
+}
+plot(sims.y~sims.x,type="n",xlab="x",ylab="y")
+#here is the overplotting trick. The colour of points can be chosen from the RGB palette, with a fourth parameter representing transparency. If we set this low, then overlapping data will slowly create more solid regions on the plot.
+points(sims.y~sims.x,pch=16,cex=2,col=rgb(1,0,0,0.01))
+points(y~x,pch=16,cex=2)
+
+```
+
+For our own data, and set of simulations, there's a strong sense that the data lies well within the bounds of the simulated outcomes, but with some observations sitting at large residual values. If the model was mis-specified, then the picture could be very different. For example, if we deliberately fit a "null" model without a linear regression:
+
+```{r warning=FALSE, message=FALSE}
+log.likelihood0<-function(b0,sigma){
+  if(sigma < 0) {deviance <- 10000000}
+  if(sigma > 0) {
+    likelihoods <- dnorm(y, mean = b0,
+                         sd=sigma)
+    log.likelihoods<-log(likelihoods)
+    deviance<- -2 * sum(log.likelihoods)
+  }
+  return(deviance)
+}
+m0.ML<- mle2(log.likelihood0, start = list(b0 = 0.5, sigma=1))
+summary(m0.ML)
+coef(m0.ML)
+
+
+sims.y<-array(0,dim=c(1000,n))
+sims.x<-array(0,dim=c(1000,n))
+for(i in 1:dim(sims.y)[1]){
+sims.x[i,]<-runif(n,min(x),max(x))
+sims.y[i,]<-coef(m0.ML)[1]+rnorm(n,0,coef(m0.ML)[2])
+}
+plot(sims.y~sims.x,type="n",xlab="x",ylab="y")
+points(sims.y~sims.x,pch=16,cex=2,col=rgb(1,0,0,0.01))
+points(y~x,pch=16,cex=2)
+
+```
+
+In this plot, there are whole areas of data-space that have been simulated but not populated by the observed data. This is because the null model fails to account for the linear relationship between y and x.
+
+##Sensitivity to Priors (Bayesian Analysis)
+An important difference between Bayesian, Information Theoretic and Frequentist approaches is that Bayesian analyses can introduce "prior" information. This is an incredible way to bring evidence into our models. For example, we might already know that the number of pet hedgehogs increases with increasing number of children. We could therefore constrain the slope of this relationship to lie above zero. The Bayesian modeller must be careful though, because false priors (i.e. prior distributions that do not capture the true relationship) will make it IMPOSSIBLE to infer the correct value. 
+
+To demonstrate this strength and weakness, imagine two scenarios. First, we create a prior for the slope that lies entirely above zero (based on wisdom that hedgehogs always increase with children). Second, we create a prior for the slope that lies entirely below zero (based on false evidence that hedgehogs always decline with increasing children).
+
+###Prior knowledge
+Here we alter the prior for beta1. Previously we allowed this to be a normal distribution with mean zero and EXTREMELY small precision (this means extremely LARGE standard deviation). In other words, our prior for the slope was uninformative and we were happy for the slope to take on any value. Here, we will force the slope to be positive, providing an uninformative prior based on a uniform distribution between zero and 100.
+
+When making these changes we also have to be very careful about initial values. In our previous version, the initial value for the slope was a draw from a normal distribution with mean zero. This meant that negative starting values would be chosen in 50% of analyses. That's an impossible starting value when the prior is defined to be >= zero. We have to make sure the initial values lie within the prior.
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+code <- nimbleCode({
+      # Likelihood
+      for(i in 1:n){
+      y[i]   ~ dnorm(mu[i],inv.var)
+      mu[i] <- beta0 + beta1*x[i]
+      }
+      
+      # Priors for parameters
+      beta0~dnorm(0,0.0001)
+      beta1~dunif(0,100)
+      inv.var   <- 1/(sigma*sigma)
+      sigma     ~ dunif(0,20)
+      })
+
+consts <- list(n = length(y))
+
+data <- list(y = y, x = x)
+
+inits <- list(beta0 = rnorm(1),
+              beta1 = runif(1),
+              sigma = runif(1))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta0", "beta1", "sigma"))
+
+mcmc.out$summary
+
+plot(mcmc.out$samples)
+
+```
+
+Now let's see what happens when our prior prevents us from inferring the correct (positive) value for the slope.
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+code <- nimbleCode({
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var)
+    mu[i] <- beta0 + beta1*x[i]
+  }
+  
+  # Priors for parameters
+  beta0~dnorm(0,0.0001)
+  beta1~dunif(-100,0)
+  inv.var   <- 1/(sigma*sigma)
+  sigma     ~ dunif(0,20)
+})
+
+consts <- list(n = length(y))
+
+data <- list(y = y, x = x)
+
+inits <- list(beta0 = rnorm(1),
+              beta1 = runif(1, -1, 0),
+              sigma = runif(1))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta0", "beta1", "sigma"))
+
+mcmc.out$summary
+
+plot(mcmc.out$samples)
+
+```
+
+Notice that the posterior distribution for beta0 is pressed right up against the upper constraint (zero). The false prior prevents our inference from exploring any posterior values above zero. Studying the posterior distribution can be a handy check of whether we have stated our model well.
+
+That was a crazy thing to do, but it gives a clear message that Bayesian analyses can be sensitive to our choice of priors. We changed from using an uninformative Normal prior (dnorm(0,0.0001)) to using an informative uniform prior (dunif(-100,1)). It is common, in ecological modelling, to use uninformative priors because we often lack any a priori wisdom about the direction or strength of effect. But two different priors, even if they are both uninformative, can still affect the inference. Here we compare the outcome of two models. The first uses an uninformative Normal prior, while the second uses an uninformative uniform prior.
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+code <- nimbleCode({
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var)
+    mu[i] <- beta0 + beta1*x[i]
+  }
+  
+  # Priors for parameters
+  beta0~dnorm(0,0.0001)
+  beta1~dnorm(0,0.0001)
+  inv.var   <- 1/(sigma*sigma)
+  sigma     ~ dunif(0,20)
+})
+
+consts <- list(n = length(y))
+
+data <- list(y = y, x = x)
+
+inits <- list(beta0 = rnorm(1),
+              beta1 = rnorm(1),
+              sigma = runif(1))
+
+mcmc.out.normal <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta0", "beta1", "sigma"))
+
+code <- nimbleCode({
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i],inv.var)
+    mu[i] <- beta0 + beta1*x[i]
+  }
+  
+  # Priors for parameters
+  beta0~dnorm(0,0.0001)
+  beta1~dunif(-10,10)
+  inv.var   <- 1/(sigma*sigma)
+  sigma     ~ dunif(0,20)
+})
+
+consts <- list(n = length(y))
+
+data <- list(y = y, x = x)
+
+inits <- list(beta0 = rnorm(1),
+              beta1 = runif(1, -5, 5),
+              sigma = runif(1))
+
+mcmc.out.uniform <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                              nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                              samplesAsCodaMCMC = TRUE, summary = TRUE,
+                              monitors = c("beta0", "beta1", "sigma"))
+
+mcmc.out.normal$summary$all.chains
+mcmc.out.uniform$summary$all.chains
+
+```
+
+These differences are very minor, but they exist. Question is, are the inferences different because of random variation in the MCMC chains, or are they due to our choice of prior distribution? It's impossible to distinguish these two sources of error. For more complicated models, the choice of prior distribution can have large impact on the qulaity of our inference.

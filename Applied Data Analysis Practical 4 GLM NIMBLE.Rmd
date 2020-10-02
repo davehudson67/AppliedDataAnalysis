@@ -1,0 +1,1014 @@
+---
+title: "Applied Data Analysis Practical 4: General Linear Modelling in R"
+author: "Matthew Silk and Dave Hodgson"
+date: "12 September 2019"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+####Set up the R environment
+
+```{r warning=FALSE, message=FALSE}
+
+rm(list=ls())
+
+set.seed(1)
+
+library(R2jags)
+library(boot)
+library(bbmle)   ##this has mle2 in
+
+```
+
+####Load Piskie dataset
+
+```{r warning=FALSE, message=FALSE}
+
+v_data<-read.csv("pisky villages.csv")
+
+```
+
+So far we have paid exclusive attention to the simplest of statistical models: the simple linear regression. The reason we did this is because the linear model framework is incredibly flexible and allows us to work with continuous explanatory variables (also called "covariates"), categorical explanatory variables (also called "factors"), and mixtures of the two.
+
+In this practical we will demonstrate that classic t-test and Analysis of Variance models can easily be presented as General Linear Models. We will then show how to include multiple explanatory variables in our analyses. We will use three of the statistical engines presented in Practical 1: Ordinary Least Squares, Maximum Likelihood and Bayesian Modelling. Most of the useful "off-the-shelf" algorithms have been written for OLS and ML, and we will quickly learn that a single function, `glm(y~x1+x2+...)` can be used to apply both OLS and ML inferential power. The Bayesian models require us to write out the models by hand, but they lend us a deeper understanding of how the models work.
+
+Our tests of IMPORTANCE will tend to be based on the Parsimony Principle (for frequentist approaches), Model Averaging and multi-model inference (for information theoretic approaches), and MCMC p-values (for Bayesian models).
+
+As a summary of the relative strengths of the three engines:
+  1. Ordinary Least Squares: F-tests of significance allow us to simplify models down to the "minimal adequate model", or MAM, which only contains predictors that have significant influence on the response variable. En route, however, this approach risks making Type I errors where we ascribe false significance to predictors simply because of the large numbers of tests that we perform. Also, if we do not proceed carefully, we risk Type II errors if we remove predictors out of turn. These risks mean that model simplification, and the principle of parsimony, should only really be used when we have firm a priori hypotheses about which predictors we have measured and might be important.
+  2. Information Theory: Multi-model inference allows us to let ALL possible models contribute to our inference. The parameters of those models will be weighted by their information content. The risk here is that unimportant predictors might be given too much weight. Another risk is that we forget to account for Type II errors associated with categorical predictors.
+  3. Bayesian models are tricky to code and must be written from first principles, using Nimble or other software. The models take a long time to run, therefore setting up rival hypotheses can be a drain. Also, there are very few available techniques to compare the relative merits of rival hypotheses. Therefore, like OLS techniques, Bayesian models are best suited to strong hypotheses.
+  
+As a rule of thumb, I use OLS and model simplification when my hypothese are strong or I have few explanatory variables. I use Information Theory and multi-model inference when I am on a "fishing expedition", searching for important predictors from a large set of explanatory variables. I use Bayesian models when (a) I want to introduce prior evidence, or (b) the model is simply too complex for the standard machinery of `glm()` or its advanced versions.
+
+Here we introduce the full dataset from a mytho-ethnographic study of Pisky villages. Cornwall has been mapped according to its postcodes, and the underlying magic field strength has also been mapped using sensitive wizardry. Magic zones are marked in purple, and zones lacking magic are marked in green. Sixty Pisky villages were monitored for a really long time, and informatioon sourced on several variables:
+  1. Longitude and Latitude
+  2. Inland or Coastal
+  3. The main Occupation of piskies in the village (Farmers, Miners, Fisherfolk or SMugglers)
+  4. The average Population, through time, of each village
+  5. Whether or not each village contained a "Plen-an-Gwarry". This is a traditional Pisky meeting place.
+  6. Average Wealth, measured in Pisky Pounds, of villagers
+  7. The number of distinct songs known by the villagers
+  8. Mean height of the villagers, in cm
+  9. The modern postcode of the villages
+
+<center>
+
+![Figure 1: Cornwall, an underlying random field, and the positions of 60 Pisky villages](Pisky Villages.PNG)
+
+</center>
+
+These data are stored in a dataset, saved as a comma-separated file called "pisky villages.csv". Read in the dataset and take a look.
+
+```{r warning=FALSE, message=FALSE}
+v_data<-read.csv("pisky villages.csv",header=T)
+v_data
+```
+
+This is an ideal format for a dataset. Each observation (village) is contained in a row, and all of the measurements for each village are in columns. A classic mantra for statistical modelling is that datasets should contain "more rows and fewer columns". What this means, in practice, is that the response variable should occur in a single column. If, for example, wealth had been measured in two consecutive years, it's better to have all the Welath in one column and an explanatory variable called "Year" (1 or 2), rather than two separate columns for the two years. It's easy to separate the years from a single column, but it's hard to join the two years together if they are stored separately. More rows, fewer columns.
+
+##Simple Linear Models
+We are already familiar with the simple linear regression model. We have used it in previous practicals to infer a relationship between ownership of pet hedgehogs and number of children in Pisky villages. We are also going to assume that, at some point in your education, you have been shown how to perform a t-test to compare the means of two samples; and that you have been shown how to use Analysis of Variance to compare among the means of a categorical variable (hereafter we call these "factors") with more than two categories. Here we will demonstrate that these can all be described as linear models, and analysed using the same General Linear Model algorithm.
+
+##Linear regression is a GLM
+We are now familiar with doing linear regression using `lm(y~x)`. It's simple to convert this to `glm(y~x)`. Seeing as we are using real data from a file we have imported, we just add the data object. For this example, let's analyse the relationship between Wealth and Population Size. 
+
+```{r warning=FALSE, message=FALSE}
+plot(Wealth~Pop,data=v_data)
+#what we did before
+m1.lm<-lm(Wealth~Pop,data=v_data)
+summary(m1.lm)
+m1.glm<-glm(Wealth~Pop,data=v_data)
+summary(m1.glm)
+```
+
+Apart from minor differences in how the model summaries are presented, these inferences are identical.
+
+##t-test is a GLM
+Let's compare the Wealth of Pisky villages between those that contain a Plen-an-Gwarry, and those that don't. Classically you might have used a t-test to do this. Here we'll show that the same inference is made by a GLM. This is only true if we use the basic t-test assumption that the variances of the two samples are the same (i.e., that the variances are homoscedastic...see the assumptions of OLS models from previous practical).
+
+```{r warning=FALSE, message=FALSE}
+v_data$PaG<-factor(v_data$PaG)
+boxplot(Wealth~PaG,data=v_data,xlab="PaG",ylab="Wealth")
+#what we did before
+m1.t<-t.test(Wealth~PaG,data=v_data,var.equal=T)
+m1.t
+m1.glm<-glm(Wealth~PaG,data=v_data)
+summary(m1.glm)
+```
+
+Despite differences in how they are presented, the inference is identical, and the GLM provides us with richer information. The significance of the GLM can be tested using an F-test, but the P-value will be identical to that of the t-test. 
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~PaG,data=v_data)
+m0.glm<-glm(Wealth~1,data=v_data)
+anova(m1.glm,m0.glm,test="F")
+```
+
+How does this work?
+###REALLY IMPORTANT CONCEPT###
+The categories "YES" and "NO" for the presence of a Plen-an-Gwarry can also be coded as "1" and "0". Then, all the data points can be placed on a scatterplot of Wealth against PaG.
+
+```{r warning=FALSE, message=FALSE}
+v_data$PaG<-as.numeric(v_data$PaG)-1
+plot(Wealth~PaG,data=v_data,type="n")
+points(Wealth~PaG,data=v_data,pch=16,cex=2)
+```
+
+Now, imagine this as a linear regression example. We fit an intercept (mean wealth when PaG=0), and a slope (increase in Wealth for a unit increase in PaG, i.e. a move from 0 ("NO") to 1 ("YES")).
+
+```{r warning=FALSE, message=FALSE}
+plot(Wealth~PaG,data=v_data)
+points(Wealth~PaG,data=v_data,pch=16,cex=1.5)
+abline(coef(m1.glm),lwd=3,col="red")
+```
+
+Hence, a classic comparison of the means of two categories can be written as a GLM. The only unusual thing about the GLM summary is the way in which the inference is presented. `summary(m1.glm)` provides an estimate of y for the "intercept". When x is a covariate, the interpretation is clear: it is the expected value of y when x=0. For a two-category comparison, the intercept is still the expected value of y when x=0. But here, x=0 for all members of the category WHOSE NAME COMES FIRST IN THE ALPHABET (this is a default setting which can be changed). The estimate for "PaG" is then a slope, just like in linear regression. When the PaG category changes from "No" (=0) to "Yes" (=1), this parameter infers how much the mean of y CHANGES. It is not an estimate of the mean for villages with a Plen-an-Gwarry. It is an estimate of the DIFFERENCE in y between villages with and without a Plen-an-Gwarry. If you want to estimate the expected value of y for villages with a Plen-an-Gwarry, you must add the estimate for PaG onto the estimate for the intercept. Note also that the standard error for PaG (inference of our uncertainty in the slope/difference), is the standard error of the DIFFERENCE between the means. It is NOT the standard error for the mean y in villages with a Plen-an-Gwarry
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~PaG,data=v_data)
+summary(m1.glm)
+#mean Wealth of villages without a PaG
+wealth.0PaG<-coef(m1.glm)[1]
+wealth.1PaG<-coef(m1.glm)[1] + coef(m1.glm)[2]
+```
+
+Hopefully this makes sense if you think about the longhand version of the model statement. We wrote `glm(y~x)`. R converted PaG into a "dummy" variable, where no PaG = 0 and PaG = 1. So the model that was actually fitted was `y = beta0 + beta1 * x + noise`. The inference for no PaG is therefore `y = beta0 + beta1 * 0 + noise = beta0 + noise`. The inference for a village with a PaG is `y = beta0 + beta1 * 1 + noise = beta0 + beta1 + noise`.
+
+##ANOVA is a GLM
+Many factors contain more than two categories. The classic one-way Analysis of Variance, or ANOVA, is used to test the hypothesis that the response variable differs among multiple categories. The machinery of ANOVA is to compare the noise absorbed by separating the data into categories, to the noise left unexplained. Remember this from linear regression? It's the same concept. The noise explained by the model is compared to the noise not explained by the model. If this ratio is large, then the model, and its associated hypothesis, is IMPORTANT.
+
+The conversion of ANOVA into a GLM is an extension of the t-test example, but it is more complicated. Let's see what happens. We will assess the influence of Occupation on Wealth.
+
+```{r warning=FALSE, message=FALSE}
+boxplot(Wealth~Occ,data=v_data,xlab="Occupation",ylab="Wealth")
+#what we did before
+m1.aov<-aov(Wealth~Occ,data=v_data)
+summary(m1.aov)
+m1.glm<-glm(Wealth~Occ,data=v_data)
+summary(m1.glm)
+m0.glm<-glm(Wealth~1,data=v_data)
+anova(m1.glm,m0.glm,test="F")
+```
+
+The test of importance (here, an F-test of significance) is identical for the AOV and the GLM. But the GLM provides much richer information in its summary statement. The main point here is that GLM replaces the classical AOV, just like it replaces the classical t-test and the classical lm for linear regression. One function delivers! Hence the "General" in "General Linear Model". And it gets even better, soon. The difficult bit for students of GLM is how to interpret the parameter estimates in `summary(m1)`. 
+
+The GLM summary provides you with an estimate of the mean value for the "intercept". When x is a covariate, this has the usual definition of the expected value of y when x=0. Here, when x is a factor, the "intercept" is the expected value of y for observations that are member of the factor category that come first in the alphabet. This is the default setting but it can be changed using the `relevel` command. Then, for each category in the explanatory variable, R has created a new dummy variable which it names after the category in the dataset. Each dummy variable is a zero for observations that are not in that category, and 1 for observations that are in that category. The parameter estimates are each "how different is the mean of that category from the mean of the intercept category?".
+
+Internally, the model has been converted from
+`glm(y~x)`
+to
+`glm(y~beta0+beta1*(is the observation in category2?)+beta2*(is the observation in category 3?)+beta3*(is the observation category 4?))`
+
+For this example, the model, and therefore its summary, is
+`y~beta0(Farming)+beta1*(Fishing?)+beta2*(Mining?)+beta3*(Smuggling?)`
+
+So, if you want to infer the mean value of wealth for Smuggler villages, the calculation is `y = beta0 + beta1*0 + beta2*0 +beta3*1 = beta0 + beta3`. We can make this inference by hand or using the `predict()` function.
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Occ,data=v_data)
+summary(m1.glm)
+
+pred.Smuggler<-coef(m1.glm)[1]+coef(m1.glm)[4]
+pred.Smuggler
+
+#or#
+
+pred.Smuggler<-predict(m1.glm,newdata=list(Occ="Smuggling"))
+pred.Smuggler
+```
+
+It's useful to infer the mean values for the factor categories, but we would also like to express our uncertainty in each mean. The GLM does not help us here, because it expresses the paranmeters as DIFFERENCES between categories, and the uncertainty in these differences. But here's a trick to help us plot the outcome of the GLM. In a nutshell, we remove the intercept (it's a bit like model simplification, but we remove an INTERNAL component from the model, rather than simplify it).
+
+```{r warning=FALSE, message=FALSE}
+#remove the intercept using "-1" in the GLM statement
+m1.no_int<-glm(Wealth~Occ-1,data=v_data)
+summary(m1.no_int)
+#make vector of category labels
+occ.cat<-levels(v_data$Occ)
+#extract the means
+mean.wealth<-summary(m1.no_int)$coefficients[,1]
+#extract the stanadrd errors of those means
+se.wealth<-summary(m1.no_int)$coefficients[,2]
+#make the barpplot and put in object "dd" to store the x-axis positions of the bars. Use ylim to make sure enogh space for the standard error bars
+dd<-barplot(mean.wealth,names.arg=occ.cat,xlab="Occupation",ylab="Wealth",ylim=c(0,100))
+#add standard error bars using the arrows command
+arrows(dd,mean.wealth-se.wealth,dd,mean.wealth+se.wealth,code=3,angle=90,length=0.1)
+```
+
+###GLMs allow multiple explanatory variables
+Another fundamental benefit of General Linear Modelling is that the response variable can be regressed against several explanatory variables, and these can be a mixture of covariates and factors. The limiting factor is the tradeoff between sample size (n = number of observations) and degrees of freedom (the number of parameters inferred by the model). Basically, df MUST be less than n, and as df approaches n, the ability (power) to infer the importance of signal gets less and less. Also, our ability to interpret the model gets weaker as the number of rival parameters gets larger.
+
+Consider the formula for simple linear regression:
+`y = beta0 + beta1 * x + noise`
+When we introduce multiple explanatory variables, we simply extend this formula:
+`y = beta0 + beta1*x1 + beta2*x2 + beta3*x3 +...+noise`
+and this can be simpified using algebra:
+$$ \mathbf{y} = \beta_{0} + \sum{\beta_{i}\mathbf{x}_{i}} + \mathbf{\epsilon} $$
+and, for the linear algebraists among you, imagine a matrix **X** that has a column of 1s in its first column, followed by each explanatory variable (or its dummy variables if x_i is a factor) in each of the remaining columns. Then, using matrix multiplication:
+$$ \mathbf{y} = \mathbf{X}\mathbf{\beta} + \mathbf{\epsilon}$$
+where we assume that \epsilon is a vector of samples from a Normal distribution with mean 0 and standard deviation defined by the residuals.
+
+###Simple multiple regression
+Let's give this a try. We might want to infer the dependence of Pisky wealth on Population Size and Number of Songs.
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Pop+Songs,data=v_data)
+summary(m1.glm)
+```
+
+This model summary SUGGESTS (but does not test) that Wealth increases with increasing Population Size, but decreases with increasing Number of Songs. Maybe the singers spend too much time singing to bother earning wealth. This is just an example of inference with GLM. We will consider the IMPORTANCE of the predictors, and the goodness of fit of the mdoel, later. Here we are explaining the ENGINES of inference.
+
+How about a mixture of covariate and factor? Let's add Occupation into our GLM.
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Pop+Songs+Occ,data=v_data)
+summary(m1.glm)
+```
+
+That was simple to achieve but we should be aware that the model is increasing incomplexity. How do we predict from it? Let's say we want to predict the Wealth of a Smuggling village that knows 5 songs and houses 30 Piskies. We add up the relevant estimates through the model summary, including the intercept. Or we use the `predict()` function.
+
+```{r warning=FALSE, message=FALSE}
+summary(m1.glm)
+#for the arithmeticians
+pred.wealth<-coef(m1.glm)[1]+coef(m1.glm)[2]*30+coef(m1.glm)[3]*5+coef(m1.glm)[6]
+pred.wealth
+
+#for the vector-savvy:
+pred.wealth<-sum(coef(m1.glm)*c(1,30,5,0,0,1))
+pred.wealth
+
+#for the linear algebraists:
+pred.wealth<-t(coef(m1.glm))%*%c(1,30,5,0,0,1)
+pred.wealth
+
+#and using the predict function
+pred.wealth<-predict(m1.glm,newdata=list(Pop=30,Songs=5,Occ="Smuggling"))
+pred.wealth
+```
+
+###Interactions among explanatory variables
+Sometimes the influence of x on y DEPENDS on the value of another explanatory variable. For example, Pisky Wealth might depend on Population Size, but the SLOPE of that relationship might depend on the Village's Occupation. The multiple regressions we did above did not account for this nuance. But the GLM framework allows us to infer INTERACTIONS among explanatory variables. There's an important semantic point here. The response variable has a RELATIONSHIP with the explanatory variables. There can be INTERACTIONS among explanatory variables that influence this RELATIONSHIP.
+
+The `glm()` function handles interactions easily. So far we have included explanatory variables using "+" to separate them. This suggests the additive influence of each explxnatory variable and each parameter. Intercations between explanatory variables are symbolised using ":". `glm()` also has a useful shorthand: `y~x1*x2` means `y~x1 + x2 + x1:x2`. For this example, where we consider the interaction between a covariate and a factor, `glm()` actually creates new dummy variables for each factor category's intercept, and for each category's slope with increasing Pop. So `y~Pop*Occ` actually becomes `y~ beta0(Farming) + beta1*Pop[Farming] + beta2*(Fishing?) + beta3*(Mining?) + beta3*(Smuggling?) + beta4*Pop*(Fishing?) + beta5*Pop*(Mining?) + beta6*Pop*(Smuggling?). All possible combinations of Population and Occupation are covered by this model statement.
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Pop+Occ+Pop:Occ,data=v_data)
+summary(m1.glm)
+
+#shorthand
+m1.glm<-glm(Wealth~Pop*Occ,data=v_data)
+summary(m1.glm)
+```
+
+Now let's infer the Wealth of a Village of Fisherfolk that houses 15 piskies.
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Pop*Occ,data=v_data)
+summary(m1.glm)
+pred.wealth<-coef(m1.glm)[1]+coef(m1.glm)[2]*15+coef(m1.glm)[3]+coef(m1.glm)[6]*15
+pred.wealth
+
+#for the vector-savvy:
+pred.wealth<-sum(coef(m1.glm)*c(1,15,1,0,0,15,0,0))
+pred.wealth
+
+#for the linear algebraists:
+pred.wealth<-t(coef(m1.glm))%*%c(1,15,1,0,0,15,0,0)
+pred.wealth
+
+#and using the predict function
+pred.wealth<-predict(m1.glm,newdata=list(Pop=15,Occ="Fishing"))
+pred.wealth
+```
+
+Let's also make a plot that shows the relationships, with fitted lines from the GLM
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Pop*Occ,data=v_data)
+summary(m1.glm)
+#first draw an empty set of axes
+plot(Wealth~Pop,data=v_data,type="n",xlab="Population",ylab="Wealth")
+#then add points for each category of Occupation, using different colours
+points(Wealth~Pop,data=v_data,subset=(Occ=="Farming"),pch=16,col="green",cex=1.5)
+points(Wealth~Pop,data=v_data,subset=(Occ=="Fishing"),pch=16,col="blue",cex=1.5)
+points(Wealth~Pop,data=v_data,subset=(Occ=="Mining"),pch=16,col="black",cex=1.5)
+points(Wealth~Pop,data=v_data,subset=(Occ=="Smuggling"),pch=16,col="red",cex=1.5)
+#to make fitted lines, create a "fake" version of the explanatory variable, that spans its full range
+fake.pop<-seq(min(v_data$Pop),max(v_data$Pop),length.out=100)
+#then for each category, use the 'predict' function to predict fitted values of y for each point on fake.x
+pred.farm<-predict(m1.glm,newdata=list(Pop=fake.pop,Occ=rep("Farming",100)))
+pred.fish<-predict(m1.glm,newdata=list(Pop=fake.pop,Occ=rep("Fishing",100)))
+pred.mine<-predict(m1.glm,newdata=list(Pop=fake.pop,Occ=rep("Mining",100)))
+pred.smuggle<-predict(m1.glm,newdata=list(Pop=fake.pop,Occ=rep("Smuggling",100)))
+#and draw lines to connect the dots
+lines(pred.farm~fake.pop,lwd=3,col="green")
+lines(pred.fish~fake.pop,lwd=3,col="blue")
+lines(pred.mine~fake.pop,lwd=3,col="black")
+lines(pred.smuggle~fake.pop,lwd=3,col="red")
+```
+
+HEALTH WARNING: lots of learner modellers come unstuck when they try to add fitted lines to plots in R. Usually the problem happens because they predict y using the x in the dataset. These x data are not ordered, hence when a line is drawn to connect them, it zooms around the axes and creates a spider's web. This is why we made a `fake.x` variable, and predicted y using it. `fake.x` is ordered from smallest to largest, so the fitted line is straight and continuous.
+
+This plot prompts an important question. Do we need the model to have different slopes for each occupation? This implies a test of the IMPORTANCE of the Pop:Occ interaction. We return to this question in the IMPORTANCE section.
+
+##Alternative Engines for GLM
+###By Eye
+Hopefully it's clear by now that complex models are not well suited to being fitted by eye. Instead, our eyes become important tests of whether models fit well...and that requires us to scrutinise Figures that contain a mixture of DATA and INFERENCE (e.g. see the most recent figure above).
+
+###By Ordinary Least Squares
+All of the GLM work we have done so far has used the OLS engine via `glm()`. We are already experts.
+
+###By Maximum Likelihood
+The coding of Maximum Likelihood versions of GLMs is more complex than the elegant simplicity of the `glm()` command. Package bbmle helps with some of the details, but it remains true that we have to understand the full structure of the GLM, and write out all the parameters we wish to infer. A useful trick to help us understand the structure of the model, is to use the `model.matrix` function. This helps us to see how many parameters are required. The model matrix "unpacks" the explanatory variables into the full set of dummy variables that will be analysed by the model. It will include a vector of 1s to represent the intercept. Any covariate will be represented by the numerical value of the covariate, in a single vector. Any factors will be split into dummy variables that answer the quesation "are you in this factor category?" (no=0, yes=1). For interactions between factors and covariates, each dummy factor category contains the measurements of the covariates for that category only. Here we will create a model matrix for the a model that includes `Pop`, `Occ` and their interaction. This matrix should have 8 columns (intercept, measurements of Pop, three dummy categories for Occ, and three dummy covariates for Pop:Occ). We will compare this to the model matrix for a model that just considers Pop and Occ as main effects. This model should have 5 columns be cause we not need dummy variables for the interaction.
+```{r warning=FALSE, message=FALSE}
+
+mm1<-model.matrix(~Pop*Occ,data=v_data)
+mm1
+mm2<-model.matrix(~Pop+Occ,data=v_data)
+mm2
+#You can see that the the model matrix with the interaction has to contain 3 additional columns
+```
+
+We now perform Maximum Likelihood analysis. This resembles the code we used for Linear Regression in Practical 1, but here we have more parameters to be inferred. We can use the columns of the model matrix to help us infer the correct set of parameters for the GLM.
+
+First we analyse model 1: Wealth~Pop*Occ = Pop + Occ + Pop:Occ
+
+```{r warning=FALSE, message=FALSE}
+y<-v_data$Wealth
+
+lm.loss1 <- function(par) {
+ b0<-par[1]
+ b1<-par[2] 
+ b2<-par[3]
+ b3<-par[4]
+ b4<-par[5]
+ b5<-par[6]
+ b6<-par[7]
+ b7<-par[8]
+ err.sigma <- par[9]
+ if(err.sigma < 0) {deviance <- 10000000}
+ if(err.sigma > 0) {
+   #use the columns of the model matrix to provide the data relevant to each parameter. To multiply each parameter by its relevant coumn of the model matrix, use mm1[,column]. Leaving a blank before the comma means "all rows"
+  likelihoods <- dnorm(y, mean = b0*mm1[,1]+b1*mm1[,2]+b2*mm1[,3]+b3*mm1[,4]+b4*mm1[,5]+b5*mm1[,6]+b6*mm1[,7]+b7*mm1[,8], sd = err.sigma)
+  log.likelihoods <- log(likelihoods)
+  deviance <- -2 * sum(log.likelihoods)
+ }
+return(deviance)
+}
+
+#This finds maximum likelihood estimates for the parameters 
+parameter.fits <- optim(par = c(30,1,-5,20,5,0.5,0.5,0.5,10),fn = lm.loss1, hessian = T)
+
+#This calculates the standard errors
+hessian <- parameter.fits$hessian
+hessian.inv <- solve(hessian)
+parameter.se <- sqrt(diag(hessian.inv))
+
+#Which gives us
+ML_mod1<-data.frame(as.vector(parameter.fits$par),parameter.se)
+names(ML_mod1)<-c("Estimate","Standard Error")
+rownames(ML_mod1)<-c(colnames(mm1),"Sigma")
+ML_mod1
+##-------
+```
+
+The second model is simpler because it does not try to infer the interaction parameters. Wealth~Pop+Occ
+
+```{r warning=FALSE, message=FALSE}
+lm.loss2 <- function(par) {
+ b0<-par[1]
+ b1<-par[2] 
+ b2<-par[3]
+ b3<-par[4]
+ b4<-par[5]
+ err.sigma <- par[6]
+
+ if(err.sigma < 0) {deviance <- 10000000}
+ if(err.sigma > 0) {
+  likelihoods <- dnorm(y, mean = b0*mm1[,1]+b1*mm1[,2]+b2*mm1[,3]+b3*mm1[,4]+b4*mm1[,5], sd = err.sigma)
+  log.likelihoods <- log(likelihoods)
+  deviance <- -2 * sum(log.likelihoods)
+ }
+return(deviance)
+}
+
+#This finds maximum likelihood estimates for the parameters 
+parameter.fits2 <- optim(par = c(30,1,-5,20,5,10),fn = lm.loss2, hessian = T)
+
+#This calculates the standard errors
+hessian <- parameter.fits2$hessian
+hessian.inv <- solve(hessian)
+parameter.se2 <- sqrt(diag(hessian.inv))
+
+#Which gives us
+ML_mod2<-data.frame(as.vector(parameter.fits2$par),parameter.se2)
+names(ML_mod2)<-c("Estimate","Standard Error")
+rownames(ML_mod2)<-c(colnames(mm2),"Sigma")
+ML_mod2
+```
+
+Compare the model summary for ML_mod1 to those of m1.glm. Are they the same?
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Pop*Occ,data=v_data)
+summary(m1.glm)
+
+ML_mod1
+```
+
+We could also have performed the Maximum Likelihood model using the `bbmle` package:
+
+```{r warning=FALSE, message=FALSE}
+log.likelihood<-function(b0,b1,b2,b3,b4,b5,b6,b7,sigma){
+  if(sigma < 0) {deviance <- 10000000}
+ if(sigma > 0) {
+  likelihoods <- dnorm(y, mean = b0*mm1[,1]+b1*mm1[,2]+b2*mm1[,3]+b3*mm1[,4]+b4*mm1[,5]+b5*mm1[,6]+b6*mm1[,7]+b7*mm1[,8], sd = sigma)
+  log.likelihoods<-log(likelihoods)
+  deviance<- -2 * sum(log.likelihoods)
+ }
+return(deviance)
+}
+m1.ML<-mle2(log.likelihood,parameters=c("b0","b1","b2","b3","b4","b5","b6","b7","b8","sigma"),start = list(b0=30,b1=1,b2=-5,b3=20,b4=5,b5=0.5,b6=0.5,b7=0.5,sigma=10))
+summary(m1.ML)
+```
+
+
+###By Bayesian & MCMC
+To keep the likelihood simple we are going to re-use the model matrices from above.
+
+
+```{r warning=FALSE, message=FALSE,cache=T}
+y <- v_data$Wealth
+mm1 <- model.matrix(~Pop * Occ, data = v_data)
+
+code <- nimbleCode({
+  # Likelihood
+      for(i in 1:n){
+        y[i] ~ dnorm(mu[i], inv.var)
+        mu[i] <- beta[1] * x[i, 1] + beta[2] * x[i, 2] + beta[3] * x[i, 3] +  beta[4] * x[i, 4] + beta[5] * x[i, 5] + beta[6] * x[i, 6] + beta[7] * x[i, 7] + beta[8] * x[i, 8]
+      }
+      
+  # Priors for parameters
+	    for(j in 1:8){
+    	  beta[j] ~ dnorm(0, 0.0001)}
+        inv.var <- 1 / (sigma * sigma)
+        sigma ~ dunif(0, 20)
+      }
+  )
+
+
+inits <- function(){
+  list(beta = rnorm(8),sigma = runif(1))
+}
+
+data <- list(y = y, x = mm1)
+
+consts <- list(n = length(y))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                               nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                               samplesAsCodaMCMC = TRUE, summary = TRUE,
+                               monitors = c("beta", "sigma"))
+
+
+mcmc.out$summary$all.chains
+
+```
+
+###By Approximate Bayesian Computation
+
+To be honest, the coding and computational effort required to do ABC with this model is NOT WORTH IT because the awesomeness of glm(), maximum likelihood and Nimble are perfectly capable. Only in extreme cases will we need to move to ABC. You might never hear about it ever again. But do please remember that it exists!
+
+##IMPORTANCE of GLM models
+Having inferred the parameters of our GLMs using all available statistical engines, we might now want to understand the IMPORTANCE of the inferred parameters, and perform significanc tests of our hypotheses. We'll stick with the GLM that regressed Wealth against Population Size and Occupation, and their interaction.
+
+###Determination
+Using our Ordinary Least Squares model, we can calculate R-squared, i.e. the proportion of noise that is explained by the model. This is the ratio of noise (here, called "deviance") explained to noise in the null model. To find these values, it can be helpful to ask for the names of the sub-objects contained within the glm model object. "Explained deviance" is not one of those sub-objects, but it can be calculated as the difference between the null deviance and the residual deviance.
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Pop*Occ,data=v_data)
+summary(m1.glm)
+names(m1.glm)
+r2<-(m1.glm$null.deviance-m1.glm$deviance)/m1.glm$null.deviance
+r2
+```
+
+So, our model explains nearly 75% of the noise in the response variable. This seems good.
+
+###Confidence in Parameters###
+As above, we can use an assumption of Normal distribution of residuals to create 95% confidence intervals for our intercept and slope.
+
+```{r warning=FALSE, message=FALSE}
+confint(m1.glm)
+```
+
+It's possible to make a claim about importance of the linear model here: if "zero" lies outside the bounds of the 95% Confidence Interval, then we can claim that the data was very unlikely to have been sampled if the null hypothesis is true. This would yield support for the alternative hypothesis, i.e. a linear relationship between y and x. [although this conclusion will require us to check our assumptions and goodness of fit]
+
+**Confidence in parameters (Permutation)**
+Here we shuffle the response variable a bgjillion times, to simulate the null hypothesis a bgjillion times, and ask whether the inference, using the observed data, lies outside the distribution of permuted outcomes. Here we perform the permutations, then plot permutation histograms for each of the inferred parameters. 
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+perms<-10000
+slope.shuffle<-array(0,dim=c(perms,ncol(mm1)))
+for(i in 1:perms){
+y.shuffle<-sample(v_data$Wealth,replace=F)
+slope.shuffle[i,]<-coef(glm(y.shuffle~Pop*Occ,data=v_data))
+}
+opar<-par(mfrow=c(2,2))
+for(i in 1:4){
+hist(slope.shuffle[,i],main=paste(names(m1.glm$coefficients)[i]),cex.main=1)
+arrows(coef(m1.glm)[i],600,coef(m1.glm)[i],200,code=2,length=0.1)
+text(coef(m1.glm)[i],650,"observed")
+}
+par(opar)
+opar<-par(mfrow=c(2,2))
+for(i in 5:8){
+hist(slope.shuffle[,i],main=paste(names(m1.glm$coefficients)[i]),cex.main=1)
+arrows(coef(m1.glm)[i],600,coef(m1.glm)[i],200,code=2,length=0.1)
+text(coef(m1.glm)[i],650,"observed")
+}
+par(opar)
+```
+
+We can turn this permutation approach into a statement of importance, by asking what proportion of permutations (simulations of the null hypothesis) yielded a linear slope that was as strong, or stronger, than the observed signal. For example, we can scrutinise the slope parameter associated with "Pop". Note that this is actually the inferred slope of the relationship between Wealth and Population for FARMING villages (because farming is the intercept category of the Occupation factor).
+
+```{r warning=FALSE, message=FALSE}
+length(slope.shuffle[2][slope.shuffle[,2]>=coef(m1.glm)[2]])/length(slope.shuffle[,2])
+```
+
+This number suggests that the slope of Wealth against Population, for Farming villages, is not importantly different from that achieved by random shuffles of the data. This is completely at odds with the evidence of importance yielded by Confidence Intervals from the `glm()` model. There's a reason for this, which we'll consider after working with bootstrap confidence intervals.
+
+**Confidence in parameters (Bootstrapping)**
+Bootstrapping is a classic "nonparametric" statistical tool, so called because it makes no assumptions about the distribution of the data or the residuals from the model. The guiding principle is that the only information we have about our "system" is the data itself. The only assumption we need to make is that the data were sampled randomly, therefore each measurement was equally likely to be made. We can "recreate" the sample a bgjillion times by sampling from the rows of data WITH REPLACEMENT. This means that each observation can happen multiple times in a bootstrapped dataset. Each bootstrap sample has an equal probability of happening, but each different bootstrap sample yields a different inference for the parameters. We use the variation among bootstrap samples to help us understand the natural uncertainty in our inference.
+
+Here we provide code for the full bootstrapping of our GLM BUT WE DO NOT EVALUATE IT BECAUSE IT RISKS NOT WORKING. It doesn't work because SOME bootstrap sample might fail to include ANY members of one of the Occupations. When this happens, the bootstrap model is just a subset of the original model, there will be too few parameters, and we can't store this smaller number of parameters in the same array.
+
+```{r warning=FALSE, message=FALSE, cache=TRUE, eval=F}
+boots<-10000
+slope.boot<-array(0,dim=c(perms,ncol(mm1)))
+for(i in 1:boots){
+booty<-sample(length(v_data$Wealth),replace=T)
+slope.boot[i,]<-coef(glm(Wealth[booty]~Pop[booty]*Occ[booty],data=v_data))
+}
+opar<-par(mfrow=c(2,2))
+for(i in 1:4){
+hist(slope.boot[,i],main=paste(names(m1.glm$coefficients)[i]),cex.main=1)
+arrows(0,600,0,200,code=2,length=0.1)
+text(0,650,"observed")
+}
+par(opar)
+opar<-par(mfrow=c(2,2))
+for(i in 5:8){
+hist(slope.boot[,i],main=paste(names(m1.glm$coefficients)[i]),cex.main=1)
+arrows(0,600,0,200,code=2,length=0.1)
+text(0,650,"observed")
+}
+par(opar)
+arrows(0,600,0,200,code=2,length=0.1)
+text(0,650,"H0")
+```
+
+
+So, permutation is letting us down with this complex model. With permutation, we have broken the natural structure of the dataset. With bootstrapping, we risk losing the full model design because of resampling. What's going on?
+
+There are several explanations for the disagreement among types of confidence interval.
+
+  1. Perhaps the assumptions of Normality of residuals and Homogeneity of residual variance are invalid (we can check this in the Goodness of Fit section).
+  2. Perhaps the signal associated with Population is being obscured by the inclusion of the Occupation:Population interaction. We can check this using model simplification (see next section).
+  3. The real reason for the disagreement is that our permutations and bootstraps have been performed badly. If we are interested in the slope of Wealth against Population, then it is not sensible to shuffle the response variable completely, because this loses the observed link between Wealth and Occupation. Similarly, it is not sensible to bootstrap the entire dataset with replacement. Instead, we should constrain the shuffling and resampling to retain the "Occupation" structure of the data.
+  
+The next block of code performs a "constrained" permutation, only shuffling the data relevant to the parameter we wish to understand (here, beta1, associated with "Pop", i.e. the slope of Wealth against Population for Farming villages).
+
+```{r warning=FALSE, message=FALSE}
+mm1<-model.matrix(~Pop*Occ,data=v_data)
+m1.glm<-glm(Wealth~Pop*Occ,data=v_data)
+perms<-10000
+slope.shuffle<-array(0,dim=c(perms,ncol(mm1)))
+for(i in 1:perms){
+y.shuffle<-v_data$Wealth
+#only shuffle the relevant data
+y.shuffle[v_data$Occ=="Farming"]<-sample(v_data$Wealth[v_data$Occ=="Farming"],replace=F)
+slope.shuffle[i,]<-coef(glm(y.shuffle~Pop*Occ,data=v_data))
+}
+opar<-par(mfrow=c(2,2))
+for(i in 1:4){
+hist(slope.shuffle[,i],main=paste(names(m1.glm$coefficients)[i]),cex.main=1)
+arrows(coef(m1.glm)[i],600,coef(m1.glm)[i],200,code=2,length=0.1)
+text(coef(m1.glm)[i],650,"observed")
+}
+par(opar)
+```
+
+And the next block performs a constrained bootstrap. The subsetting of the data gets a bit gnarly here, with multiple uses of `[]` subsets. Perhaps a useful message is that bootstrap can be dangerous with complex models!
+
+```{r warning=FALSE, message=FALSE}
+boots<-10000
+slope.boot<-array(0,dim=c(perms,ncol(mm1)))
+for(i in 1:boots){
+booty<-sample(length(v_data$Wealth[v_data$Occ=="Farming"]),replace=T)
+boot.data<-v_data
+boot.data[boot.data$Occ=="Farming",]<-v_data[boot.data$Occ=="Farming",][booty,]
+slope.boot[i,]<-coef(glm(Wealth~Pop*Occ,data=boot.data))
+}
+opar<-par(mfrow=c(2,2))
+for(i in 1:4){
+hist(slope.boot[,i],main=paste(names(m1.glm$coefficients)[i]),cex.main=1)
+arrows(0,600,0,200,code=2,length=0.1)
+text(0,650,"Zero")
+}
+par(opar)
+```
+
+Overall, with careful constraints on our permutations and bootstraps, we have a message that agrees with the OLS confidence intervals. The relationship between Wealth and Population, in Farming villages at least, is stronger than we would expect by chance alone.
+
+###Significance###
+If we couple our Ordinary Least Squares engine with the frequentist's Significance toolbox, then we can ask whether the alternative hypothesis is a significantly better explanation of reality than the null hypothesis. We have to make a handful of assumptions:
+
+  1. The residuals of the model are Normally distributed.
+  2. All residuals share the same variance.
+  3. The residuals are independent of one another.
+  4. Data has been sampled at random and without bias.
+  5. The linear model is relevant.
+
+We will attempt to validate these assumptions in the "Goodness of Fit" practical. For now, assume they are valid. If valid, then accept this summary of some very clever mathematical statistics:
+
+"The ratio of the variance explained by the model, to the variance not explained by the model, is F-distributed with df1 and df2 degrees of freedom". 
+
+df1 is the number of degrees of freedom required to fit the model, compared to the rival null hypothesis. df2 is the df of the "leftover" noise in the system.
+
+But, now that we've fitted a complex mixture of explanatory variables, we must be careful about our definition of null and alternative hypotheses. The FULL model, with two explanatory variables, is y~x1*x2. We COULD choose to compare this model to the NULL model y~1. HOwever, if we found a significant effect, we would not know whether that was due to the interaction between x1 and x2, to the main effect of x1 or the main effect of x2. 
+
+Instead it is common practice to simplify the model sequentially, starting with the most complex interaction, and "leaving out" any model terms that are not significant. Here, if the interaction between Occupation and Wealth is not significant, we would leave it out, and this would reveal the main effects of Occupation, and of Wealth, making them available for testing. We continue the process of simplification, each time leaving out the least significant of the non-significant terms, until we are left with only the significant terms. The model that contains ONLY significant terms is called the **Minimal Adequate Model**. Here is an example of the process:
+
+```{r warning=FALSE, message=FALSE}
+m1.glm<-glm(Wealth~Occ*Pop,data=v_data)
+m2.glm<-glm(Wealth~Occ+Pop,data=v_data)
+anova(m1.glm,m2.glm,test="F")
+#the interaction is not significant (F3,52=0.665, P=0.577)
+m3.glm<-glm(Wealth~Occ,data=v_data)
+anova(m2.glm,m3.glm,test="F")
+#Pop is highly significant F1,55=47.278, P<0.001
+m4.glm<-glm(Wealth~Pop,data=v_data)
+anova(m2.glm,m4.glm,test="F")
+#and Occ is also highly significant F3,55=26.087, P<0.001
+```
+
+This process is called Model Simplification, and it is a popular approach to the principle of parsimony in statistical modelling.
+
+Some tips for sensible model simplification, to help reduce the risk of Type I and Type II errors:
+
+  1. Only test terms that are available. Terms that are complete members of higher-level interactions should (generally) not be tested.
+  2. Use careful book-keeping to keep track of your model simplification. Drawing a diagram of your model, with main effects at the bottom and linking via interactions, all the way to the full model, can be helpful. It forms a "model pyramid" that you can dismantle using model simplification.
+  3. When several terms are all available for testing, test them all individually. Remove only the least significant of the non-significant terms, and then revisit the model.
+  4. USeful shorthand for the removal of terms is to write `m.simple<-update(m.complicated,~.-explanatory.variable)`. Here, the shorthand code says "update the complicated model by fitting it as it was ("."), but with the removal ("-") of a single term. When you do this, you know that the ensuing anova test will be a test of the significance of the term that has just been removed by the update function.
+  5. Degrees of freedom for the F-test are described in the anova(m.simple,m.complicated) statement, but you have to use arithmetic. As a rule of thumb, the term removed used Resid.df[simple]-Resid.df[complicated] degrees of freedom, while the residual has df defined by the smallest of the two Resid.df values.
+  6. If you're feeling really lazy, then you can use the dropterm() function in library "MASS". However, if you need that, then your model is probably too complicated to justify model simplification (you will risk TypeI and TypeII errors due to multiple testing) and you should use Multi-Model Inference instead.
+  
+###Multi-model Inference
+A handy feature of the glm() command is that, despite using Ordinary Least Squares by default, it can also provide robust estimates of log-likelihood and AIC. This means that we can "dredge" the full model, allowing all possible subsets to contribute to the information content of the model. We can then weight the parameter estimates by the information content of all the models they appear in, and create "model-averaged" confidence intervals. 
+
+```{r warning=FALSE, message=FALSE}
+#model averaging and confidence intervals
+library(MuMIn)
+m1.glm<-glm(Wealth~Occ*Pop,data=v_data,na.action="na.fail")
+dredge.m1<-dredge(m1.glm)
+dredge.m1
+coeff<-model.avg(dredge.m1,subset=delta<20)
+modav.betas<-coefTable(coeff)
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+```
+
+With several parameters to consider, we can plot them and their confidence intervals to help with our judgement of importance. This is a rare example of plotting the response variable on the x-axis. We draw a vertical line at zero to help us see whether the confidence intervals span zero (if they do, there is a strong suggestion that that parameter is not informatively different from zero):
+
+```{r warning=FALSE, message=FALSE}
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+mod.names<-rownames(modav.betas)
+#wee trick here is to flip a barplot on its side
+ddd<-barplot(modav.betas[,1],horiz=T,xlim=c(-10,50),col="white",border="white", names.arg=mod.names,las=1)
+mtext("model-averaged effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+#and add the confidence intervals as "error whiskers"
+arrows(modav.ci[,1],ddd,modav.ci[,2],ddd,code=3,angle=90,length=0.1)
+points(modav.betas[,1],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+There's a serious problem with this Figure. Because the variables have been measured on different scales, the parameter inferences are also on radically different scales, making it hard to "see" several of the confidence intervals. This is the first situation we have encountered where it would be a good idea to "scale" the variables. A common approach is to scale everything to have zero mean and unit standard deviation. This has the benefit of making all the confidence intervals and inferences on the same scale. It also helps to make our models more robust...it is simply much easier for the statistical engines to "analyse" data that is clustered around zero, and for which zero sits in the "middle" of the data cloud. The downside is that we lose our units of measurement...if we wish to PREDICT values of y for known values of x, then the intercept, slopes and differences among categories must be carefully back-transformed by adding the mean and multiplying by the standard deviation of each variable. Sometimes this is not for the faint-hearted.There is no need to scale factors (indeed it doesn't make sense to scale the names of categories).
+
+```{r warning=FALSE, message=FALSE}
+#model averaging and confidence intervals
+#First, scale the data
+v_data$Wealth.scale<-scale(v_data$Wealth)
+v_data$Pop.scale<-scale(v_data$Pop)
+library(MuMIn)
+m1.glm<-glm(Wealth.scale~Occ*Pop.scale,data=v_data,na.action="na.fail")
+dredge.m1<-dredge(m1.glm)
+dredge.m1
+coeff<-model.avg(dredge.m1,subset=delta<20)
+modav.betas<-coefTable(coeff)
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+mod.names<-rownames(modav.betas)
+ddd<-barplot(modav.betas[,1],horiz=T,xlim=c(-5,5),col="white",border="white", names.arg=mod.names,las=1)
+mtext("model-averaged effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(modav.ci[,1],ddd,modav.ci[,2],ddd,code=3,angle=90,length=0.1)
+points(modav.betas[,1],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+For our tests of importance, this figure is much easier to consider. There is strong evidence here that the interaction between Occupation and Population is not important, because all of the *differences* in slope have confidence intervals that span zero. The slope  associated with farmers has a confidence interval that does not span zero (so Population size appears to be important), but the EXTRA slope associated with the other three occupations does not add important signal. This confirms what we found with our model simplification based on F-tests.
+
+###Bayesian and MCMC
+We can do something very similar with our Bayesian GLM. The key difference here is that we plot CREDIBLE intervals for each parameter, rather than CONFIDENCE intervals.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+v_data$Wealth.scale <- as.numeric(scale(v_data$Wealth))
+v_data$Pop.scale <- as.numeric(scale(v_data$Pop))
+mm1 <- model.matrix(~Occ * Pop.scale, data = v_data)
+y <- as.numeric(v_data$Wealth.scale)
+
+code <- nimbleCode({
+  # Likelihood
+  for(i in 1:n){
+    y[i] ~ dnorm(mu[i], inv.var)
+    mu[i] <- beta[1] * x[i, 1] + beta[2] * x[i, 2] + beta[3] * x[i, 3] +  beta[4] * x[i, 4] + beta[5] * x[i, 5] + beta[6] * x[i, 6] + beta[7] * x[i, 7] + beta[8] * x[i, 8]
+  }
+  
+  # Priors for parameters
+  for(j in 1:8){
+    beta[j] ~ dnorm(0, 0.0001)}
+  inv.var <- 1 / (sigma * sigma)
+  sigma ~ dunif(0, 20)
+}
+)
+
+
+inits <- function(){
+  list(beta = rnorm(8), sigma = runif(1))
+}
+
+data <- list(y = y, x = mm1)
+
+consts <- list(n = length(y))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta", "sigma"))
+
+mcmc.out$summary$all.chains
+
+oldpar <- par(mar = c(5, 15, 4, 2) + 0.1, mgp = c(10, 1, 0))
+
+m1.MCMC.mat <- as.matrix(mcmc.out$samples)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles <- apply(m1.MCMC.dat, 2, quantile, probs = c(0.025, 0.5, 0.975))
+m1.quantiles
+ddd <- barplot(m1.quantiles[2, ], horiz = T, xlim = c(-3, 3), col = "white", border = "white", names.arg = c(colnames(mm1), "sigma"), las=1)
+mtext("MCMC effect size", side = 1, line = 3)
+mtext("predictor", side = 2, line = 9)
+arrows(m1.quantiles[1, ], ddd, m1.quantiles[3, ], ddd, code = 3, angle = 90, length = 0.1)
+points(m1.quantiles[2, ], ddd, cex = 1.8, pch = 21, bg = "black")
+lines(c(0, 0), c(0, 20), lty = 2, lwd = 2)
+par(oldpar)
+```
+
+The only inelegant aspect of this model, which uses a vector of beta-parameters and a matrix of data sourced from the model.matrix, is that the beta parameters had to be labelled 1-8, rather than beta0 (for the intercept) then beta1-7. So be careful with interpretation.
+
+Nimble is still developing the way it handles matrix algebra. It is possible to simplify the model statement to something like `y[i]<-mm1[i,]%*%beta` but a clearer model statement would be to use the "inprod" function.
+
+But to do this in Nimble we must define the dimensions of the matrices so we need to add '1:8' arguments in the model code.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+v_data$Wealth.scale <- as.numeric(scale(v_data$Wealth))
+v_data$Pop.scale <- as.numeric(scale(v_data$Pop))
+mm1 <- model.matrix(~Occ * Pop.scale, data = v_data)
+y <- as.numeric(v_data$Wealth.scale)
+
+code <- nimbleCode({
+  # Likelihood
+  for(i in 1:n){
+    y[i]   ~ dnorm(mu[i], inv.var)
+    mu[i] <- inprod(x[i, 1:8], beta[1:8])
+    }
+  
+  # Priors for parameters
+  for(j in 1:8){
+    beta[j] ~ dnorm(0, 0.0001)}
+    inv.var <- 1 / (sigma * sigma)
+    sigma ~ dunif(0, 20)
+}
+)
+
+
+inits <- function(){
+  list(beta = rnorm(8), sigma = runif(1))
+}
+
+data <- list(y = y, x = mm1)
+
+consts <- list(n = length(y))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta", "sigma"))
+
+mcmc.out$summary$all.chains
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.mat <- as.matrix(mcmc.out$samples)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-3,3),col="white",border="white", names.arg=c(colnames(mm1),"sigma"),las=1)
+mtext("MCMC effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+It's worth remembering that the MCMC algorithm provides a full coda for the posterior distribution of each parameter in the model. This allows us to generate "violin" plots rather than the rather crude credible interval plots from above.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-3,3),col="white",border="white", names.arg=c(colnames(mm1),"sigma"),las=1)
+for(i in 1:dim(m1.MCMC.dat)[2]){
+dddd<-density(m1.MCMC.dat[,i])
+viola<-dddd$y/max(dddd$y)*0.3
+violax<-c(dddd$x,rev(dddd$x))
+violay<-c(viola,-rev(viola))
+polygon(violax,violay+ddd[i],col=rgb(1,0,0,0.5))}
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+points(m1.quantiles[2,],ddd,cex=1,pch=16)
+par(oldpar)
+```
+
+
+##Goodness of Fit
+###Using glm()
+The `plot(model)` command associated with `glm()` provides us with everything we need to test the assumptions of Homogeneity of Variance in the residuals, and Normality of residuals, and also tells us about the leverage of the data.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+opar<-par(mfrow=c(2,2))
+plot(m1.glm)
+par(opar)
+```
+
+The homogeneity of variance plot (top left) hints that variance might be smaller among the larger fitted values, but perhaps not strongly so. The Normality plot suggests that the residuals behave like an ideal Normal distribution. The leverage plot (bottom left) suggests that the 52nd row of data has strong leverage in our model (but Cook's distance remains less than one so we shouldn't be too worried).
+
+This check of assumptions suggests that our GLM, assuming Normal residuals with constant variance, is "not bad" in terms of Goodness of Fit. This model check applies to our OLS analysis, and to our Maximum Likelihood analysis. It also suggests that the use of the Normal distribution to infer parameters in our Bayesian mdoel, is justified. In a previous practical we provided tools to help with internal and external validation of the model, and tools to help simulate predictions from the model, to check that the observed data lie "close to" our idealised model predictions. We'll repeat that final check here.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+n<-length(v_data$Wealth)
+sims.y.Farming<-array(0,dim=c(100,n))
+sims.y.Fishing<-array(0,dim=c(100,n))
+sims.y.Mining<-array(0,dim=c(100,n))
+sims.y.Smuggling<-array(0,dim=c(100,n))
+sims.x<-array(0,dim=c(100,n))
+for(i in 1:dim(sims.y.Farming)[1]){
+sims.x[i,]<-runif(n,min(v_data$Pop),max(v_data$Pop))
+sims.y.Farming[i,]<-coef(m1.ML)[1]+coef(m1.ML)[2]*sims.x[i,]+rnorm(n,0,coef(m1.ML)[9])
+sims.y.Fishing[i,]<-coef(m1.ML)[1]+coef(m1.ML)[2]*sims.x[i,]+coef(m1.ML)[3]+coef(m1.ML)[6]*sims.x[i,]+rnorm(n,0,coef(m1.ML)[9])
+sims.y.Mining[i,]<-coef(m1.ML)[1]+coef(m1.ML)[2]*sims.x[i,]+coef(m1.ML)[4]+coef(m1.ML)[7]*sims.x[i,]+rnorm(n,0,coef(m1.ML)[9])
+sims.y.Smuggling[i,]<-coef(m1.ML)[1]+coef(m1.ML)[2]*sims.x[i,]+coef(m1.ML)[5]+coef(m1.ML)[8]*sims.x[i,]+rnorm(n,0,coef(m1.ML)[9])
+}
+plot(sims.y.Smuggling~sims.x,type="n",xlab="x",ylab="y")
+#here is the overplotting trick. The colour of points can be chosen from the RGB palette, with a fourth parameter representing transparency. If we set this low, then overlapping data willslowly create more solid regions on the plot.
+points(sims.y.Farming~sims.x,pch=16,cex=2,col=rgb(0,1,0,0.01))
+points(sims.y.Fishing~sims.x,pch=16,cex=2,col=rgb(0,0,1,0.01))
+points(sims.y.Mining~sims.x,pch=16,cex=2,col=rgb(0,0,0,0.01))
+points(sims.y.Smuggling~sims.x,pch=16,cex=2,col=rgb(1,0,0,0.01))
+points(Wealth~Pop,data=v_data,subset=(v_data$Occ=="Farming"),pch=21,cex=2,bg="green")
+points(Wealth~Pop,data=v_data,subset=(v_data$Occ=="Fishing"),pch=21,cex=2,bg="blue")
+points(Wealth~Pop,data=v_data,subset=(v_data$Occ=="Mining"),pch=21,cex=2,bg="black")
+points(Wealth~Pop,data=v_data,subset=(v_data$Occ=="Smuggling"),pch=21,cex=2,bg="red")
+lines(pred.farm~fake.pop,lwd=3,col="green")
+lines(pred.fish~fake.pop,lwd=3,col="blue")
+lines(pred.mine~fake.pop,lwd=3,col="black")
+lines(pred.smuggle~fake.pop,lwd=3,col="red")
+```
+
+##Sensitivity to Priors (Bayesian Analysis)
+An important difference between Bayesian, Information Theoretic and Frequentist approaches is that Bayesian analyses can introduce "prior" information. This is an incredible way to bring evidence into our models. The Bayesian modeller must be careful though, because false priors (i.e. prior distributions that do not capture the true relationship) will make it IMPOSSIBLE to infer the correct value. A more subtle influence of priors is when the simple choice of "what distribution best represents the prior for each parameter?" has an impact on the posterior inference.
+
+It is common, in ecological modelling, to use uninformative priors because we often lack any a priori wisdom about the direction or strength of effect. But two different priors, even if they are both uninformative, can still affect the inference. Here we compare the outcome of two models. The first uses an uninformative Uniform prior on the residual standard deviation sigma, while the second uses an uninformative log-Normal prior. We use log-Normal because we do not want residual noise to have negative values (you can't have negative noise in statistics).
+
+```{r warning=FALSE, message=FALSE,cache=T}
+y <- v_data$Wealth
+mm1 <- model.matrix(~Pop * Occ, data = v_data)
+
+code <- nimbleCode({
+  # Likelihood
+  for(i in 1:n){
+    y[i] ~ dnorm(mu[i], inv.var)
+    mu[i] <- beta[1] * x[i, 1] + beta[2] * x[i, 2] + beta[3] * x[i, 3] +  beta[4] * x[i, 4] + beta[5] * x[i, 5] + beta[6] * x[i, 6] + beta[7] * x[i, 7] + beta[8] * x[i, 8]
+  }
+  
+  # Priors for parameters
+  for(j in 1:8){
+    beta[j] ~ dnorm(0, 0.0001)}
+  inv.var <- 1 / (sigma * sigma)
+  sigma ~ dunif(0, 20)
+}
+)
+
+
+inits <- function(){
+  list(beta = rnorm(8), sigma = runif(1))
+}
+
+data <- list(y = y, x = mm1)
+
+consts <- list(n = length(y))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta", "sigma"))
+
+mcmc.out$summary$all.chains
+
+```
+
+Now, we change the prior for sigma to be log-Normal (which is parameterised by the mean and standard deviation of the log of the residuals).
+
+```{r warning=FALSE, message=FALSE,cache=T}
+y <- v_data$Wealth
+mm1 <- model.matrix(~Pop * Occ, data = v_data)
+
+code <- nimbleCode({
+  # Likelihood
+  for(i in 1:n){
+    y[i] ~ dnorm(mu[i], inv.var)
+    mu[i] <- beta[1] * x[i, 1] + beta[2] * x[i, 2] + beta[3] * x[i, 3] +  beta[4] * x[i, 4] + beta[5] * x[i, 5] + beta[6] * x[i, 6] + beta[7] * x[i, 7] + beta[8] * x[i, 8]
+  }
+  
+  # Priors for parameters
+  for(j in 1:8){
+    beta[j] ~ dnorm(0, 0.0001)}
+  inv.var <- 1 / (sigma * sigma)
+  sigma ~ dlnorm(0, 0.0001)
+}
+)
+
+
+inits <- function(){
+  list(beta = rnorm(8), sigma = runif(1))
+}
+
+data <- list(y = y, x = mm1)
+
+consts <- list(n = length(y))
+
+mcmc.out <- nimbleMCMC(code = code, constants = consts, data = data, inits = inits,
+                       nchains = 3, niter = 20000, nburnin = 2000, thin = 10, 
+                       samplesAsCodaMCMC = TRUE, summary = TRUE,
+                       monitors = c("beta", "sigma"))
+
+mcmc.out$summary$all.chains
+```
+
+There are differences between the inferences, but these are probably within the envelope of MCMC error. In this example, the choice of prior for residual standard deviation has not had much impact on the posterior inference. This need not always be the case, though, and the Bayesian modeller must be careful with their choices of priors and stochastic nodes.
+
+##Health Warning
+So far we have been kind to you in terms of the behaviour of the models' residuals. There is little evidence so far to suggest that the residuals of the GLMs are non-Normal, although there was a hint of heteroscedasticity in the `glm(Wealth~Pop*Occ)` model. Data in the life and environmental sciences is not always so kind to the modeller. Consider, for example, model checks of the following models:
+
+  1. glm(Songs~Wealth) (does the number of folk songs depend on village wealth?)
+  2. glm(PaG~Occ) (does the presence of a Plen-an-Gwarry depend on the main occupation of villagers?)
+  
+```{r warning=FALSE, message=FALSE,cache=T}
+songs.glm<-glm(Songs~Wealth,data=v_data)
+summary(songs.glm)
+opar<-par(mfrow=c(2,2))
+plot(songs.glm)
+par(opar)
+```
+
+Here we see plain evidence of heteroscedasticity in the residuals, and some non-Normality in those residuals. Alarm bells should be ringing.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+PaG.glm<-glm(PaG~Occ,data=v_data)
+summary(songs.glm)
+opar<-par(mfrow=c(2,2))
+plot(PaG.glm)
+par(opar)
+```
+
+And here we see some very nasty residual distributions. This makes sense...the response variable is made of ones and zeroes, so the residuals cannot possibly have a Normal distribution. The next practical helps us deal with misbehaved data and residuals.

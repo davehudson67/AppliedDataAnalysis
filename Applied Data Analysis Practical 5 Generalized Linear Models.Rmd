@@ -1,0 +1,770 @@
+ ---
+title: "Applied Data Analysis Practical 5: Generalized Linear Modelling in R"
+author: "Matthew Silk and Dave Hodgson"
+date: "12 September 2019"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+####Set up the R environment
+
+```{r warning=FALSE, message=FALSE}
+
+rm(list=ls())
+
+set.seed(1)
+
+library(R2jags)
+library(boot)
+library(bbmle)   ##this has mle2 in
+
+```
+
+####Load Piskie dataset
+Here we use the full dataset from our mytho-ethnographic study of Pisky villages. Cornwall has been mapped according to its postcodes, and the underlying magic field strength has also been mapped using sensitive wizardry. Magic zones are marked in purple, and zones lacking magic are marked in green. Sixty Pisky villages were monitored for a really long time, and informatioon sourced on several variables:
+  1. Longitude and Latitude
+  2. Inland or Coastal
+  3. The main Occupation of piskies in the village (Farmers, Miners, Fisherfolk or SMugglers)
+  4. The average Population, through time, of each village
+  5. Whether or not each village contained a "Plen-an-Gwarry". This is a traditional Pisky meeting place.
+  6. Average Wealth, measured in Pisky Pounds, of villagers
+  7. The number of distinct songs known by the villagers
+  8. Mean height of the villagers, in cm
+  9. The modern postcode of the villages
+
+<center>
+
+![Figure 1: Cornwall, an underlying random field, and the positions of 60 Pisky villages](Pisky Villages.PNG)
+
+</center>
+
+These data are stored in a dataset, saved as a comma-separated file called "pisky villages.csv". Read in the dataset. 
+
+```{r warning=FALSE, message=FALSE}
+
+v_data<-read.csv("pisky villages.csv")
+
+```
+
+##Non-Normal Data and Residuals
+
+Recall the five core assumptions of "classic" General Linear Models:
+  1. The residuals of the model are Normally distributed.
+  2. All residuals share the same variance.
+  3. The residuals are independent of one another.
+  4. Data has been sampled at random and without bias.
+  5. The linear model is relevant.
+  
+We have discussed how assumptions (4) and (5) must be judged by the scientist. Violations of the assumption of independence and random sampling will be considered in the next practical. Assumptions (1) and (2) can be judged via goodness of fit and model checking. Assumption (5) can also be judged by examination of patterns in residuals, but are perhaps best judged by plotting the data and the fitted values. But what happens when these three assumptions are violated?
+
+Traditionally, applied statisticians would manipulate their DATA in an attempt to satisfy the assumptions of Normality and homoscdasticity of residuals. A common approach is to transform the response variable, using `log(y)`, `exp(y)`, powers of y (e.g. square root, square, Box-Cox transformations) or even (dare we say it) removal of irritating data with high leverage.
+
+Problems associated with Assumption 5, i.e. that sometimes relationships between y and x are NOT straight lines, can be dealt with in various ways. Nonlinear regression, using Ordinary Least Squares, is a common traditional approach. This can be done using the `nls()` function in R. Curvature in the relationship between y and x can also be dealt with by introducing further explanatory variables...fitting glm(y~x+x^2), for example, can be used to test, via model simplification, whether the relationship is a simple curve. For analysts who do not want to claim linear relationships *a priori*, General Additive Models can help reveal the "best fit" shape of the relationship between y and covariate x. If interested, search for `gam()` on R help pages. Here we provide a simple example of testing for curvature. Imagine the hypothesis that Pisky Wealth depends on Pisky Height, and that perhaps that relationship is curved.
+
+```{r warning=FALSE, message=FALSE}
+plot(Wealth~Height,data=v_data)
+v_data$Height.sq<-v_data$Height^2
+m1.curve<-glm(Wealth~Height+Height.sq,data=v_data)
+summary(m1.curve)
+m1.linear<-update(m1.curve,~.-Height.sq)
+anova(m1.curve,m1.linear,test="F")
+```
+
+There is no evidence here to suggest curvature in the relationship between Wealth and Height (General Linear Model, test of quadratic effect, $$F_{1,57}$$ = 0.666, P = 0.418; Figure 1). This claim should be accompanied by a check of goodness of fit, just to be sure.
+
+```{r warning=FALSE, message=FALSE}
+opar<-par(mfrow=c(2,2))
+plot(m1.curve)
+plot(m1.linear)
+par(opar)
+```
+
+Sometimes the non-Normality of data and residuals will be obvious to the analyst before models have even been constructed. The Normal distribution has several features that real-world data cannot hope to mimic. The Normal distribution is symmetrical around its mean. The Normal distribution can take any decimal value. The Normal distribution has tails that stretch back to minus infinity and up to positive infinity. The mean and variance of the Normal distribution are independent of one another.
+
+In the real world, data tends to have natural boundaries. Natural measurements often cannot be less than zero. Often there are also upper bounds. Often natural measurements are counts, which are integers by definition. Often natural measurements are binary (e.g. presence.absence) or are proportions. Often natural measurements are clustered or skewed or have heavy- or light-tails to their histograms. Natural measurements often demonstrate relationships between their mean and their variance. Often these non-Normal distributions cannot be cured via transformations of the response variable. Log-transformation cannot Normalise counts because the log of zero (a perfectly reasonable outcome of a count) is minus infinity. Logit or probit transformations cannot cure binary or proportion data because their transformations of zero or one are both infinity. Argh.
+
+The advent of Generalized Linear Models have cured many, if not most, of the issues related to non-Normality. Generalized Linear Models do two very clever things to allow us to use slight variations on the standard GLM framework.
+
+  1. Distributions of residuals can be made "Normal" via the use of LINK functions that transform, not the data, but the parameters of the model. There exist canonical links between data-types and link-functions. Proportion or binary data can be Normalised using logit or probit links. Count data can be Normalised using the log-link. Skewed, non-negative variables can be Normalised using the reciprocal or log links. The challenge for the analyst is to recognise the natural data structure and its distribution "family"" (Binary for yes/no; Binomial for proportions; Poisson for well-behaved counts; Negative binomial for clustered counts).
+  2. If we know the family of the data, then we also know that the mean and variance can depend on each other mathematically. For "well-behaved" proportion or count data, if we know the mean then we know the variance. There is no point in "inferring" the residual variance because it is defined by the mean. Hence, F-tests are often invalid for various families of data structure. But, we can rely on Chi-square tests instead, because they measure the significance of the magnitude of single variances or likelihoods.
+  
+###Pisky data
+Two of the variables measured in the Pisky dataset pose clear threat to the standard assumptions of Normality. The presence or absence of a Plen-an-Gwarry in each village can take only one of two values: yes or no. The number of folk songs known in each village is a count. It must be an integer, and it clearly cannot be less than zero. The sex ratio of the villages, although measured as a count of females and a count of population size, must be analysed as a proportion, or as a probability of any randomly sample Pisky being female.
+
+```{r warning=FALSE, message=FALSE}
+opar<-par(mfrow=c(3,1))
+hist(v_data$PaG,main="Plen an Gwarry")
+hist(v_data$Songs,main="Songs")
+hist((v_data$Female/v_data$Pop),main="Proportion Female")
+par(opar)
+```
+
+We would be unwise to claim that these histograms resemble Normal distribution. Sex ratio comes close, but it is bimodal and we know that it is bounded below by zero and above by one.
+
+For each of these response variables, we will test the hypothesis that it is influenced by Occupation and/or Wealth. We will use the first four of our statistical engines (by eye, Ordinary Least Squares, Maximum Likelihood and Bayesian), consider the importance of the inferred parameters and hypotheses, and then check goodness of fit. Most of our analyses will use the `glm()` framework because both OLS and Maximum Likelihood measures can be extracted from it. The Bayesian approach will (I hope) help us to understand the structure of the models and the way that link functions work.
+
+This practical will depart from our usual routine of engine-importance-goodness. Here we will deliver inference, importance and goodness of fit for each engine in turn.
+
+##Poisson GzLM: What predicts the number of folk songs?
+Number of folk songs is a count. The classic probability distribution for counts is the Poisson distribution. The Poisson distribution has the unusual feature that its variance is the same as its mean. Hence, any tests of importance or significance should not use F-tests because the residual variance is "known" if the fitted values are "known". We can check this assumption as an extra measure of Goodness of Fit, and adjust our analyses if found to be untrue.
+
+```{r warning=FALSE, message=FALSE}
+plot(Songs~Wealth,data=v_data,type="n")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="Green")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="Blue")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="Black")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="Red")
+```
+
+###By Eye
+What do your eyes tell you about the relationships between Songs, Wealth and Occupation? In my case, not much, except perhaps that Smugglers are wealthy but don't know many songs. Our eyes are not great at making inference, especially when hypotheses are complex. However, they are VERY good at judging goodness of fit, so we can return to this engine when we have fitted models using more objective algorithms.
+
+###By Ordinary Least Squares
+We can fit Generalized Linear Models (hereafter, GzLM) using only slight variations on the `glm()` framework. We simply have to tell glm what family of response variable we are working with, and then adjust our tests of significance accordingly. Songs is a count, so our starting point is to assume a Poisson distribution, and hence its canonical link function, the log-link.
+
+
+```{r warning=FALSE, message=FALSE}
+m1.songs<-glm(Songs~Wealth*Occ,data=v_data,family=poisson(link="log"))
+summary(m1.songs)
+```
+
+We can use this model to infer the relationships and superimpose them on our graph. We have to be careful when predicting from GzLM, because the parameter estimates are presented on the LINK scale. Here, the parameters are actually logs. We have to backtransform our PREDICTIONS using `exp(prediction)`. DO NOT BE TEMPTED to just back-transform the parameters themselves. Straight lines on the link scale WILL NOT BE straight lines on the measurement scale of the response variable. To cure this, we can use `type="response"` in our `predict()` commands.
+
+```{r warning=FALSE, message=FALSE}
+plot(Songs~Wealth,data=v_data,type="n")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="Green")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="Blue")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="Black")
+points(Songs~Wealth, data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="Red")
+fake.wealth<-seq(min(v_data$Wealth),max(v_data$Wealth),length.out=100)
+pred.farm<-predict(m1.songs,newdata=list(Wealth=fake.wealth,Occ=rep("Farming",100)),type="response")
+pred.fish<-predict(m1.songs,newdata=list(Wealth=fake.wealth,Occ=rep("Fishing",100)),type="response")
+pred.mine<-predict(m1.songs,newdata=list(Wealth=fake.wealth,Occ=rep("Mining",100)),type="response")
+pred.smuggle<-predict(m1.songs,newdata=list(Wealth=fake.wealth,Occ=rep("Smuggling",100)),type="response")
+lines(pred.farm~fake.wealth,lwd=3,col="green")
+lines(pred.fish~fake.wealth,lwd=3,col="blue")
+lines(pred.mine~fake.wealth,lwd=3,col="black")
+lines(pred.smuggle~fake.wealth,lwd=3,col="red")
+```
+
+This figure suggests completely different relationships between Songs and Wealth for each of the different Occupations. But is this real? We should test the significance of the interaction using model simplification. The only change, from the GLM approach, is that we use a Chi-square test of significance when we use the Poisson family (because we assume that the residual variance is the same as the mean).
+
+```{r warning=FALSE, message=FALSE}
+m2.songs<-update(m1.songs,~.-Wealth:Occ)
+anova(m1.songs,m2.songs,test="Chi")
+```
+
+There is no significant evidence here for an interaction between Wealth and Occupation in their influence on Songs. Move on to test the main effects of Wealth, and of Occupation. Note that these two explanatory variables are correlated, because Smugglers are wealthy. Hence, Occupation and Wealth are likely to "share" signal. This means that the removal of one predictor will affect the significance of the other, and vice versa. We have to be careful. If the explanatory variables are highly correlated, then model simplification will often reveal that neither is significant when the other one remains in the model, because they share the same signal. Standard practice is to remove the least significant of the non-significant terms. Does this seem reasonable?
+
+```{r warning=FALSE, message=FALSE}
+m3.songs<-update(m2.songs,~.-Wealth)
+anova(m2.songs,m3.songs,test="Chi")
+m4.songs<-update(m2.songs,~.-Occ)
+anova(m2.songs,m4.songs,test="Chi")
+#neither is significant alone. Remove the least significant (Wealth) and tesdt the remaining main effect (Occ)
+#m3.songs is the model that has had Wealth already removed from it
+m5.songs<-update(m3.songs,~.-Occ)
+anova(m3.songs,m5.songs,test="Chi")
+```
+
+We found no significant evidence of an interaction between Wealth and Occupation ($\chi^2_3 = 5.346, P = 0.148$). Nor did we find significant evidence of an effect of Wealth on number of songs ($\chi^2_1 = 0.493, P = 0.482$). Number of songs varied significantly among Occupations ($\chi^2_3 = 8.392, P = 0.039$; Figure 1).
+
+Plotting this Minimal Adequate Model is actually a bit of a pain. The predict function only gives expected values, and does not provide standard errors or confidence intervals. What we seek is a barplot of means with standard errors. We can use the summary(model) command BUT WITH CAUTION. The parameters in `sumamry(model)` are still on the LINK scale anmd must be back-transformed. When we back-transform parameters, the standard errors, which are symmetrical on the link scale, become non-symmetrical. Do not simply back-transform the standard errors and add them on, because these are measures of variation. Add them on the link scale then back-transform them. Lots of inexperienced R-coders come unstuck at this point.
+
+```{r warning=FALSE, message=FALSE}
+mfig.songs<-glm(Songs~Occ-1,data=v_data,family=poisson)
+means<-summary(mfig.songs)$coefficients[,1]
+back.means<-exp(means)
+std.errs<-summary(mfig.songs)$coefficients[,2]
+back.se.up<-exp(means+std.errs)
+back.se.down<-exp(means-std.errs)
+dd<-barplot(back.means,names.arg=levels(v_data$Occ),xlab="Occupation",ylab="Songs",ylim=c(0,10))
+arrows(dd,back.se.down,dd,back.se.up,code=3,angle=90,length=0.1)
+```
+
+###Goodness of Fit
+Standard approach here is to do a standard model check. On the canonical link scale, the residuals should have been Normalised and given homogeneous variance. Here we check the Minimal Adequate Model.
+
+```{r warning=FALSE, message=FALSE}
+opar<-par(mfrow=c(2,2))
+plot(m3.songs)
+par(opar)
+```
+
+The residuals look Normal, but there are hints of heteroscedasticity and one observation has high leverage.
+
+With non-Normal data families that make assumptions of the relationship between mean and variance, we must do an extra "Goodness of Fit" check. We check for overdispersion, which simply means "is the variance larger than what we expect for this error family?". The clues are in the model summary. If the residual deviance is more than 50% larger than the residual degrees of freedom, then we have a problem with overdispersion and our inference cannot be trusted. Usually this means we risk claiming false significance.
+
+```{r warning=FALSE, message=FALSE}
+summary(m3.songs)
+overdisp<-m3.songs$deviance/m3.songs$df.residual
+overdisp
+```
+
+We should be worried if this ratio exceeds 1.5. No obvious overdispersion here so, if we are willing to accept our model check, we can have increased faith in our inference and test of significance. IF we found evidence for overdispersion, we would be obliged to ESTIMATE the residual deviance and use this in F-tests of significance. We do this by changing the family to "quasipoisson", then using F-tests. This generally makes our tests very conservative. This has the benefit of preventing claims of false significance, but can also lead to disappointing claims of false non-significance. We don't need to do it with this model, but if we did, here's how:
+
+```{r warning=FALSE, message=FALSE}
+m1.songs.od<-glm(Songs~Occ,data=v_data,family=quasipoisson)
+m2.songs.od<-update(m1.songs.od,~.-Occ)
+anova(m1.songs.od,m2.songs.od,test="F")
+```
+
+And here, we find no significant signal ($F_3,56 = 2.702, P = 0.054).
+
+###By Maximum Likelihood
+We start this section by using the Information Theoretic approach to study the importance of rival models, using Multi-Model Inference. We source our estimates of log-likelihood, and therefore of AIC, from the `glm()` function. In this example, we deal with the various scales of measurement by scaling the Wealth variable to have zero mean and unit standard deviation, as part of the GLM statement.
+
+```{r warning=FALSE, message=FALSE}
+#model averaging and confidence intervals
+library(MuMIn)
+m1.glm<-glm(Songs~scale(Wealth)*Occ,data=v_data,family=poisson,na.action="na.fail")
+dredge.m1<-dredge(m1.glm)
+dredge.m1
+coeff<-model.avg(dredge.m1,subset=delta<20)
+modav.betas<-coefTable(coeff)
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+```
+
+With several parameters to consider, we can plot them and their confidence intervals to help with our judgement of importance. This is a rare example of plotting the response variable on the x-axis. We draw a vertical line at zero to help us see whether teh confidence intervals span zero (if they do, there is a strong suggestion that that parameter is not informatively different from zero):
+
+```{r warning=FALSE, message=FALSE}
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+mod.names<-rownames(modav.betas)
+ddd<-barplot(modav.betas[,1],horiz=T,xlim=c(-2,3),col="white",border="white", names.arg=mod.names,las=1)
+mtext("model-averaged effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(modav.ci[,1],ddd,modav.ci[,2],ddd,code=3,angle=90,length=0.1)
+points(modav.betas[,1],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+So, here we have a situation where the frequentist and the information theorist would disagree on the importance of the hypotheses. Multi-model inference suggests that none of the parameters, when weighted by their information content, are importantly different from zero.
+
+We can also fit these models using pure maximum likelihood. The ML engine is similar to what we have used with simpler models, but differs in how we model the likelihood function (dpois instead of dnorm) and the log-link function (we back-transform the parameters using exp()).
+
+```{r warning=FALSE, message=FALSE}
+mm1<-model.matrix(~Occ,data=v_data)
+y<-v_data$Songs
+
+log.likelihood<-function(b0,b1,b2,b3){
+  likelihoods <- dpois(y, lambda = exp(b0*mm1[,1]+b1*mm1[,2]+b2*mm1[,3]+b3*mm1[,4]))
+  log.likelihoods<-log(likelihoods)
+  deviance<- -2 * sum(log.likelihoods)
+return(deviance)
+}
+m1.ML<-mle2(log.likelihood,parameters=c("b0","b1","b2","b3"),start = list(b0=2,b1=0,b2=0,b3=0))
+summary(m1.ML)
+```
+
+###Bayesian model and posterior credible intervals
+
+Here we set up a Bayesian GzLM of Songs against Occupation (i.e. using the minimal adequate model from the frequentist approach). As with the Maximum Likelihood engine, we have to define the data family, and the link function, explcitly. We sample the response variable from a Poisson distribution, defined by the natural exponent of the linear combination of the parameters of our GzLM.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+y<-v_data$Songs
+mm1<-model.matrix(~Occ,data=v_data)
+{sink("GzLM.jags")
+  cat("
+      model {
+      # Likelihood
+      for(i in 1:n){
+      y[i]   ~ dpois(mu[i])
+      mu[i] <- exp(beta[1]*x[i,1] + beta[2]*x[i,2] + beta[3]*x[i,3] +  beta[4]*x[i,4])
+      }
+      
+      # Priors for parameters
+	for(j in 1:4){
+	beta[j]~dnorm(0,0.0001)}
+      }
+      ",fill = TRUE)
+  sink()
+}
+
+init_values <- function(){
+  list(beta = rnorm(4))
+}
+
+params <- c("beta")
+
+m1.MCMC <- jags(data = list(y=y,x=mm1,n=length(y)), inits = init_values, parameters.to.save = params, model.file = "GzLM.jags", n.chains = 3, n.iter = 20000, n.burnin = 2000, n.thin = 10, DIC = F)
+
+print(m1.MCMC)
+
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-1.5,2.5),col="white",border="white", names.arg=c(colnames(mm1)),las=1)
+mtext("MCMC 95% credible interval",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+
+```
+
+Intriguingly, this MCMC analysis disagrees with the Minimal Adequate Model from the frequentist analysis. Even though our GzLM modelling inferred a significant influence of Occupation on Songs, the 95% credible intervals for the difference in Songs between Occupation categories suggests no credible differences. Although there is a hint that Fishing Villages might know more songs than the others, the 95% credible interval still (just) spans zero. The difference probably lies in the fact the the frequentist F-test is looking for ANY differences among means, while the Bayesian model is looking at each category separately, and comparing it to Farming villages. The true difference probably lies between Smuggling villages and Mining villages. We can check this by re-levelling the Occupation factor
+
+```{r warning=FALSE, message=FALSE,cache=T}
+y<-v_data$Songs
+v_data$Occ<-relevel(v_data$Occ,ref="Mining")
+mm1<-model.matrix(~Occ,data=v_data)
+{sink("GzLM.jags")
+  cat("
+      model {
+      # Likelihood
+      for(i in 1:n){
+      y[i]   ~ dpois(mu[i])
+      mu[i] <- exp(beta[1]*x[i,1] + beta[2]*x[i,2] + beta[3]*x[i,3] +  beta[4]*x[i,4])
+      }
+      
+      # Priors for parameters
+	for(j in 1:4){
+	beta[j]~dnorm(0,0.0001)}
+      }
+      ",fill = TRUE)
+  sink()
+}
+
+init_values <- function(){
+  list(beta = rnorm(4))
+}
+
+params <- c("beta")
+
+m1.MCMC <- jags(data = list(y=y,x=mm1,n=length(y)), inits = init_values, parameters.to.save = params, model.file = "GzLM.jags", n.chains = 3, n.iter = 20000, n.burnin = 2000, n.thin = 10, DIC = F)
+
+print(m1.MCMC)
+
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-1.5,2.5),col="white",border="white", names.arg=c(colnames(mm1)),las=1)
+mtext("MCMC 95% credible interval",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+
+```
+
+Indeed, it turns out that Fishing and SMuggling villages know more songs than Mining villages. Inference can be, quite literally, a minefield.
+
+To end this analysis we perform a convergence check on the MCMC model.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+traceplot(m1.MCMC)
+```
+
+These "hairy caterpillars" seem fine...no suggestion that the MCMC chains have become trapped, or are cycling through parameter space, and the chains seem to overlap on the same posterior distibution.
+
+##Binomial GzLM: what predicts the sex ratio of Pisky villages?
+Our data on sex ratio is actually composed of two numbers: the number of females per village, and the total population size. The proportion of females is the ratio of these numbers. The ODDS of being female are the ratio of the number of females to the number of males. The response variable cannot hope to be Normally distributed BUT it is usual for the log-odds to be distributed Normally. Hence we use the canonical logit link to model the proportion p, where $logit(p) = log(\frac{p}{1-p})$. We retain information on the number of females and the number of males, because larger samples contribute more information to the inference of the sex ratio "p".
+
+###By Ordinary Least Squares
+We can fit Generalized Linear Models (hereafter, GzLM) using only slight variations on the `glm()` framework. We simply have to tell glm what family of response variable we are working with, and then adjust our tests of significance accordingly. Sex ratio is a proportion, informed by the number of successes (females) and the number of failures (males), so our starting point is to assume a Binomial distribution, and hence its canonical link function, the logit. For `glm(,family=binomial)` we must join together the number of successes and the number of failures per observation.
+
+We'll start with a simple model of sex ratio against Wealth, mainly to illustrate a situation where overdispersion occurs.
+
+```{r warning=FALSE, message=FALSE}
+y<-cbind(v_data$Females,v_data$Pop-v_data$Females)
+m1.gender<-glm(y~Wealth,data=v_data,family=binomial(link="logit"))
+summary(m1.gender)
+```
+
+Before we progress, we should note a serious case of overdispersion. The residual deviance is approximately twice the residual degrees of freedom. This means that the sex ratios are not behaving like a typical binomial distribution...there is too much variation. This might be because gender is not a random statistical process (i.e. females, or males, tend to cluster randomly). Or, it might be that we have failed to measure something that actually affects sex ratios, leading to clusters in our data. Either way, if we continue with this model then we have to account for the extra-binomial variance, using the quasibinomial family, and F-tests.
+
+```{r warning=FALSE, message=FALSE}
+m1.gender.od<-glm(y~Wealth,data=v_data,family=quasibinomial)
+m2.gender.od<-update(m1.gender.od,~.-Wealth)
+anova(m1.gender.od,m2.gender.od,test="F")
+```
+
+We find no significant influence of Wealth on Sex Ratio in Pisky villages ($F_{1,58}$ = 0.887, P = 0.350).
+
+We are about to discover that this overdispersion was caused by unmodelled predictors. We should always start with our maximal model.
+
+
+
+```{r warning=FALSE, message=FALSE}
+y<-cbind(v_data$Females,v_data$Pop-v_data$Females)
+m1.gender<-glm(y~Wealth*Occ,data=v_data,family=binomial(link="logit"))
+summary(m1.gender)
+```
+
+We can use this model to infer the relationships and superimpose them on our graph. We have to be careful when predicting from GzLM, because the parameter estimates are presented on the LINK scale. Here, the parameters are actually logs. We have to backtransform our PREDICTIONS. The backtransformation from the logit function is a bit nasty. If $logit(p) = log(\frac{p}{1-p})$, then $p = \frac{1}{1+\frac{1}{e^{(logit(p))}}}$. DO NOT BE TEMPTED to just back-transform the parameters themselves. Straight lines on the link scale WILL NOT BE straight lines on the measurement scale of the response variable. To cure this, we can use `type="response"` in our `predict()` commands.
+
+```{r warning=FALSE, message=FALSE}
+sex.ratio<-v_data$Females/v_data$Pop
+plot(sex.ratio~Wealth,data=v_data,type="n",ylim=c(0,1))
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="Green")
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="Blue")
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="Black")
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="Red")
+fake.wealth<-seq(min(v_data$Wealth),max(v_data$Wealth),length.out=100)
+pred.farm<-predict(m1.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Farming",100)),type="response")
+pred.fish<-predict(m1.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Fishing",100)),type="response")
+pred.mine<-predict(m1.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Mining",100)),type="response")
+pred.smuggle<-predict(m1.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Smuggling",100)),type="response")
+lines(pred.farm~fake.wealth,lwd=3,col="green")
+lines(pred.fish~fake.wealth,lwd=3,col="blue")
+lines(pred.mine~fake.wealth,lwd=3,col="black")
+lines(pred.smuggle~fake.wealth,lwd=3,col="red")
+```
+
+This figure suggests different relationships between sex ratio and Wealth for the different Occupations. But is this real? We should test the significance of the interaction using model simplification. The only change, from the GLM approach, is that we use a Chi-square test of significance when we use the Poisson family (because we assume that the residual variance is the same as the mean).
+
+```{r warning=FALSE, message=FALSE}
+m2.gender<-update(m1.gender,~.-Wealth:Occ)
+anova(m1.gender,m2.gender,test="Chi")
+```
+
+There is no significant evidence here for an interaction between Wealth and Occupation in their influence on Sex Ratio. Move on to test the main effects of Wealth, and of Occupation. Note that these two explanatory variables are correlated, because Smugglers are wealthy. Hence, Occupation and Wealth are likely to "share" signal. This means that the removal of one predictor will affect the significance of the other, and vice versa. We have to be careful. If the explanatory variables are highly correlated, then model simplification will often reveal that neither is significant when the other one remains in the model, because they share the same signal. Standard practice is to remove the least significant of the non-significant terms. Does this seem reasonable?
+
+```{r warning=FALSE, message=FALSE}
+m3.gender<-update(m2.gender,~.-Wealth)
+anova(m2.gender,m3.gender,test="Chi")
+m4.gender<-update(m2.gender,~.-Occ)
+anova(m2.gender,m4.gender,test="Chi")
+#both are significant. Keep them both in the model...we have our MAM!
+summary(m2.gender)
+```
+
+We found no significant evidence of an interaction between Wealth and Occupation ($\chi^2_3 = 1.721, P = 0.632$). We did find significant evidence of an effect of Wealth on sex ratio ($\chi^2_1 = 6.888, P = 0.009$), and sex ratio varied significantly among Occupations ($\chi^2_3 = 79.748, P < 0.001$; Figure 1).
+
+Plotting this Minimal Adequate Model is relatively simple, using the predict function, because we are only adding fitted lines. Our MAM states that Wealth affects sex ratios, but affects them similarly for each of the Occupation categories. 
+
+```{r warning=FALSE, message=FALSE}
+sex.ratio<-v_data$Females/v_data$Pop
+plot(sex.ratio~Wealth,data=v_data,type="n",ylim=c(0,1))
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="Green")
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="Blue")
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="Black")
+points(sex.ratio~Wealth, data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="Red")
+fake.wealth<-seq(min(v_data$Wealth),max(v_data$Wealth),length.out=100)
+pred.farm<-predict(m2.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Farming",100)),type="response")
+pred.fish<-predict(m2.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Fishing",100)),type="response")
+pred.mine<-predict(m2.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Mining",100)),type="response")
+pred.smuggle<-predict(m2.gender,newdata=list(Wealth=fake.wealth,Occ=rep("Smuggling",100)),type="response")
+lines(pred.farm~fake.wealth,lwd=3,col="green")
+lines(pred.fish~fake.wealth,lwd=3,col="blue")
+lines(pred.mine~fake.wealth,lwd=3,col="black")
+lines(pred.smuggle~fake.wealth,lwd=3,col="red")
+```
+
+For the sake of argument (and to show some coding tricks), imagine that we only want to plot the effect of Occupation on sex ratio. The predict function only gives expected values, and does not provide standard errors or confidence intervals. What we seek is a barplot of means with standard errors. We can use the summary(model) command BUT WITH CAUTION. When we back-transform parameters, the standard errors, which are symmetrical on the link scale, become non-symmetrical. Do not simply back-transform the standard errors and add them on, because these are measures of variation. Add them on the link scale then back-transform them.
+
+```{r warning=FALSE, message=FALSE}
+mfig.gender<-glm(y~Occ-1,data=v_data,family=binomial)
+means<-summary(mfig.gender)$coefficients[,1]
+back.means<-1/(1+1/exp(means))
+std.errs<-summary(mfig.gender)$coefficients[,2]
+back.se.up<-1/(1+1/exp(means+std.errs))
+back.se.down<-1/(1+1/exp(means-std.errs))
+dd<-barplot(back.means,names.arg=levels(v_data$Occ),xlab="Occupation",ylab="Sex ratio",ylim=c(0,1))
+arrows(dd,back.se.down,dd,back.se.up,code=3,angle=90,length=0.1)
+```
+
+The frequentist approach suggests a Minimal Adequate Model that contains Occupation and Wealth as main effects. We should check for Goodness of Fit, using the standard set of model checks.
+
+```{r warning=FALSE, message=FALSE}
+opar<-par(mfrow=c(2,2))
+plot(m2.gender)
+par(opar)
+```
+
+For a model that uses an unusual data family, this is a surprisingly good model check. There is no evidence for heteroscedasticity, the residuals follow a Normal distribution, and there is no evidence of unusual leverage.
+
+###By Maximum Likelihood
+We start this section by using the Information Theoretic approach to study the importance of rival models, using Multi-Model Inference. We source our estimates of log-likelihood, and therefore of AIC, from the `glm()` function. In this example, we deal with the various scales of measurement by scaling the Wealth variable to have zero mean and unit standard deviation, as part of the GLM statement.
+
+```{r warning=FALSE, message=FALSE}
+#model averaging and confidence intervals
+library(MuMIn)
+m1.glm<-glm(y~scale(Wealth)*Occ,data=v_data,family=binomial,na.action="na.fail")
+dredge.m1<-dredge(m1.glm)
+dredge.m1
+coeff<-model.avg(dredge.m1,subset=delta<20)
+modav.betas<-coefTable(coeff)
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+```
+
+With several parameters to consider, we can plot them and their confidence intervals to help with our judgement of importance. This is a rare example of plotting the response variable on the x-axis. We draw a vertical line at zero to help us see whether teh confidence intervals span zero (if they do, there is a strong suggestion that that parameter is not informatively different from zero):
+
+```{r warning=FALSE, message=FALSE}
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+mod.names<-rownames(modav.betas)
+ddd<-barplot(modav.betas[,1],horiz=T,xlim=c(-2,3),col="white",border="white", names.arg=mod.names,las=1)
+mtext("model-averaged effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(modav.ci[,1],ddd,modav.ci[,2],ddd,code=3,angle=90,length=0.1)
+points(modav.betas[,1],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+So, here the frequentist and the information theorist agree on the importance of the hypotheses. Multi-model inference suggests that only the main effect parameters (Wealth, and categories of Occupation), when weighted by their information content, are importantly different from zero.
+
+We can also fit these models using pure maximum likelihood. The ML engine is similar to what we have used with simpler models, but differs in how we model the likelihood function (dbinom instead of dnorm) and the logit-link function (we back-transform the parameters using `1/(1+1/exp())`. The elegance here is that the response variable is the number of females, and the number of trials is expressed in the dbinom statement as `size=pop`.
+
+```{r warning=FALSE, message=FALSE}
+mm1<-model.matrix(~Wealth+Occ,data=v_data)
+females<-v_data$Female
+pop<-v_data$Pop
+
+log.likelihood<-function(b0,b1,b2,b3,b4){
+  likelihoods <- dbinom(x=females,size=pop,prob = 1/(1+1/exp(b0*mm1[,1]+b1*mm1[,2]+b2*mm1[,3]+b3*mm1[,4]+b4*mm1[,5])))
+  log.likelihoods<-log(likelihoods)
+  deviance<- -2 * sum(log.likelihoods)
+return(deviance)
+}
+m1.ML<-mle2(log.likelihood,parameters=c("b0","b1","b2","b3","b4"),start = list(b0=0,b1=0,b2=0,b3=0,b4=0))
+summary(m1.ML)
+```
+
+###Bayesian model and posterior credible intervals
+
+Here we set up a Bayesian GzLM of sex ratio against Wealth and Occupation (i.e. using the minimal adequate model from the frequentist approach). As with the Maximum Likelihood engine, we have to define the data family, and the link function, explcitly. We sample the response variable from a Binomial distribution (defined by the number of females and the total population), as predicted by the inverse-logit of the linear combination of the parameters of our GzLM.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+females<-v_data$Female
+pop<-v_data$Pop
+mm1<-model.matrix(~scale(Wealth)+Occ,data=v_data)
+{sink("GzLMbinomial.jags")
+  cat("
+      model {
+      # Likelihood
+      for(i in 1:n){
+      f[i]   ~ dbin(p[i],total[i])
+      p[i] <- 1/(1+1/exp(beta[1]*x[i,1] + beta[2]*x[i,2] + beta[3]*x[i,3] +  beta[4]*x[i,4] + beta[5]*x[i,5]))
+      }
+      
+      # Priors for parameters
+	for(j in 1:5){
+	beta[j]~dnorm(0,0.0001)}
+      }
+      ",fill = TRUE)
+  sink()
+}
+
+init_values <- function(){
+  list(beta = rnorm(5))
+}
+
+params <- c("beta")
+
+m1.MCMC <- jags(data = list(f=females,x=mm1,n=length(females),total=pop), inits = init_values, parameters.to.save = params, model.file = "GzLMbinomial.jags", n.chains = 3, n.iter = 20000, n.burnin = 2000, n.thin = 10, DIC = F)
+
+print(m1.MCMC)
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-1.5,2.5),col="white",border="white", names.arg=c(colnames(mm1)),las=1)
+mtext("MCMC 95% credible interval",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+To end this analysis we perform a convergence check on the MCMC model.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+traceplot(m1.MCMC)
+```
+
+##Binary GzLM: What predicts presence of a Plen-an-Gwarry?
+Here, the response variable is binary, and can be written as a one (yes) or zero (no). It cannot hope to be Normally distributed. Inference based on an assumption of Normality will be extremely wrong. Instead, we rely on the Bernoulli distribution, which is the special case of the binomial distribution when the "number of attempts" per sample is just one. The outcome is either success or failure.
+
+A health warning comes with the analysis of binary response variables. Even with the use of a logit link function, model checks will NEVER look ideal. Instead, the analyst is asked to trust in the simplicity of the data structure. On the plus side, overdispersion is unlikely to be a problem.
+
+For analysis with bonary responses, there is no need to combine the number of successes with the number of failures, because the number of trials is always 1.
+
+```{r warning=FALSE, message=FALSE}
+m1.pag<-glm(PaG~Wealth*Occ,data=v_data,family=binomial)
+plot(PaG~Wealth,data=v_data,type="n",ylim=c(0,1),ylab="Plen-an-Gwarry")
+points(PaG~Wealth, data=v_data,subset=(Occ=="Farming"),pch=16,cex=1.5,col="Green")
+points(PaG~Wealth, data=v_data,subset=(Occ=="Fishing"),pch=16,cex=1.5,col="Blue")
+points(PaG~Wealth, data=v_data,subset=(Occ=="Mining"),pch=16,cex=1.5,col="Black")
+points(PaG~Wealth, data=v_data,subset=(Occ=="Smuggling"),pch=16,cex=1.5,col="Red")
+fake.wealth<-seq(min(v_data$Wealth),max(v_data$Wealth),length.out=100)
+pred.farm<-predict(m1.pag,newdata=list(Wealth=fake.wealth,Occ=rep("Farming",100)),type="response")
+pred.fish<-predict(m1.pag,newdata=list(Wealth=fake.wealth,Occ=rep("Fishing",100)),type="response")
+pred.mine<-predict(m1.pag,newdata=list(Wealth=fake.wealth,Occ=rep("Mining",100)),type="response")
+pred.smuggle<-predict(m1.pag,newdata=list(Wealth=fake.wealth,Occ=rep("Smuggling",100)),type="response")
+lines(pred.farm~fake.wealth,lwd=3,col="green")
+lines(pred.fish~fake.wealth,lwd=3,col="blue")
+lines(pred.mine~fake.wealth,lwd=3,col="black")
+lines(pred.smuggle~fake.wealth,lwd=3,col="red")
+```
+
+Notice some unusual features of this figure. The response variable can only be zero or one, and this can make it hard to plot, especially when x-values are repeated. This can be improved in two ways, not covered here:
+
+  1. We might `jitter()` the binary response, so that datapoints sit "around" their actual values, showing the reader how much data is associated with each value.
+  2. We might put the x-axis into "bins" of possible values, and calculate the proportion of successes for each bin. This brings the data closer to the fitted lines. We might also vary the size of the datapoints, to reflect differences in sample size in each bin of the x-axis. The size of plotting symbols can be adjusted using the `cex` ("character expansion") subcommand of `points()`.
+  
+Also notice the shape of the fitted lines. Correct use of the logit link function means that the probability of success CANNOT be less than zero or greater than one. These are logistic curves, hence GzLM with binary error structure is often called "logistic regression".
+
+The figure suggests that each Occupation might have a different relationship between Plen-an-Gwarry and Wealth. But, our eyes are bad at inferring this truth, hence we must model it and judge the importance of parameters and hypotheses.
+
+```{r warning=FALSE, message=FALSE}
+m2.pag<-update(m1.pag,~.-Wealth:Occ)
+anova(m1.pag,m2.pag,test="Chi")
+m3.pag<-update(m2.pag,~.-Wealth)
+anova(m2.pag,m3.pag,test="Chi")
+m4.pag<-update(m2.pag,~.-Occ)
+anova(m2.pag,m4.pag,test="Chi")
+#neither are significant. Drop the least significant and move on
+#m3.pag is the model from which Wealth was removed.
+summary(m3.pag)
+m5.pag<-update(m3.pag,~.-Occ)
+anova(m5.pag,m3.pag,test="Chi")
+#not significant. We have simplified to the null model, and found no significant predictors of Plen-an-Gwarry
+```
+
+Here we found no significant predictors of the existence of a Plen-an-Gwarry. Make sure that you are able to state the statistical evidence for these non-significant hypothesis tests. Each statement requires a test statistic, degrees of freedom, and P-value. We might choose to demonstrate to the reader that Occupation has no significant influence on the probability of existence of a Plen-an-Gwarry:
+
+```{r warning=FALSE, message=FALSE}
+mfig.pag<-glm(PaG~Occ-1,data=v_data,family=binomial)
+means<-summary(mfig.pag)$coefficients[,1]
+back.means<-1/(1+1/exp(means))
+std.errs<-summary(mfig.pag)$coefficients[,2]
+back.se.up<-1/(1+1/exp(means+std.errs))
+back.se.down<-1/(1+1/exp(means-std.errs))
+dd<-barplot(back.means,names.arg=levels(v_data$Occ),xlab="Occupation",ylab="Plen-an-Gwarry",ylim=c(0,1))
+arrows(dd,back.se.down,dd,back.se.up,code=3,angle=90,length=0.1)
+```
+
+###By Maximum Likelihood
+We start this section by using the Information Theoretic approach to study the importance of rival models, using Multi-Model Inference. We source our estimates of log-likelihood, and therefore of AIC, from the `glm()` function. In this example, we deal with the various scales of measurement by scaling the Wealth variable to have zero mean and unit standard deviation, as part of the GLM statement.
+
+```{r warning=FALSE, message=FALSE}
+#model averaging and confidence intervals
+library(MuMIn)
+m1.glm<-glm(PaG~scale(Wealth)*Occ,data=v_data,family=binomial,na.action="na.fail")
+dredge.m1<-dredge(m1.glm)
+dredge.m1
+coeff<-model.avg(dredge.m1,subset=delta<20)
+modav.betas<-coefTable(coeff)
+modav.ci<-confint(coeff)
+modav.betas
+modav.ci
+```
+
+With several parameters to consider, we can plot them and their confidence intervals to help with our judgement of importance. This is a rare example of plotting the response variable on the x-axis. We draw a vertical line at zero to help us see whether teh confidence intervals span zero (if they do, there is a strong suggestion that that parameter is not informatively different from zero):
+
+```{r warning=FALSE, message=FALSE}
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+mod.names<-rownames(modav.betas)
+ddd<-barplot(modav.betas[,1],horiz=T,xlim=c(-5,5),col="white",border="white", names.arg=mod.names,las=1)
+mtext("model-averaged effect size",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(modav.ci[,1],ddd,modav.ci[,2],ddd,code=3,angle=90,length=0.1)
+points(modav.betas[,1],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+So, here the frequentist and the information theorist agree on the importance of the hypotheses. There are no important predictors of the existence of a Plen-an-Gwarry (at least, not among the predictors we chose to study).
+
+We can also fit these models using pure maximum likelihood. The ML engine is similar to what we have used with simpler models, but differs in how we model the likelihood function (`dbinom` instead of `dnorm`, to reflect differences in the Likelihood functions of each datum) and the logit-link function (we back-transform the parameters using 1/(1+1/exp()).
+
+```{r warning=FALSE, message=FALSE}
+mm1<-model.matrix(~Wealth+Occ,data=v_data)
+y<-v_data$PaG
+
+log.likelihood<-function(b0,b1,b2,b3,b4){
+  likelihoods <- dbinom(x=y,size=1,prob = 1/(1+1/exp(b0*mm1[,1]+b1*mm1[,2]+b2*mm1[,3]+b3*mm1[,4]+b4*mm1[,5])))
+  log.likelihoods<-log(likelihoods)
+  deviance<- -2 * sum(log.likelihoods)
+return(deviance)
+}
+m1.ML<-mle2(log.likelihood,parameters=c("b0","b1","b2","b3","b4"),start = list(b0=0,b1=0,b2=0,b3=0,b4=0))
+summary(m1.ML)
+```
+
+Intriguingly, the maximum likelihood approach suggests that Occupation might actually be an important predictor of Plen-an-Gwarry...it looks like Fishing and Smuggling villages are less likely to have one.
+
+###Bayesian model and posterior credible intervals
+
+Here we set up a Bayesian GzLM of Plen-an-Gwarry against Wealth and Occupation. As with the Maximum Likelihood engine, we have to define the data family, and the link function, explcitly. We sample the response variable from a Bernoulli distribution, defined by the inverse-logit of the linear combination of the parameters of our GzLM.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+pag<-v_data$PaG
+mm1<-model.matrix(~scale(Wealth)+Occ,data=v_data)
+{sink("GzLMbinary.jags")
+  cat("
+      model {
+      # Likelihood
+      for(i in 1:n){
+      y[i]   ~ dbinom(p[i],1)
+      p[i] <- 1/(1+1/exp(beta[1]*x[i,1] + beta[2]*x[i,2] + beta[3]*x[i,3] +  beta[4]*x[i,4] + beta[5]*x[i,5]))
+      }
+      
+      # Priors for parameters
+	for(j in 1:5){
+	beta[j]~dnorm(0,0.0001)}
+      }
+      ",fill = TRUE)
+  sink()
+}
+
+init_values <- function(){
+  list(beta = rnorm(5))
+}
+
+params <- c("beta")
+
+m1.MCMC <- jags(data = list(y=pag,x=mm1,n=dim(mm1)[1]), inits = init_values, parameters.to.save = params, model.file = "GzLMbinary.jags", n.chains = 3, n.iter = 20000, n.burnin = 2000, n.thin = 10, DIC = F)
+
+print(m1.MCMC)
+
+
+oldpar<-par(mar=c(5,15,4,2)+0.1,mgp=c(10,1,0))
+m1.MCMC.fit<-as.mcmc(m1.MCMC)
+m1.MCMC.mat <- as.matrix(m1.MCMC.fit)
+m1.MCMC.dat <- as.data.frame(m1.MCMC.mat)
+m1.quantiles<-apply(m1.MCMC.dat,2,quantile,probs=c(0.025,0.5,0.975))
+m1.quantiles
+ddd<-barplot(m1.quantiles[2,],horiz=T,xlim=c(-5,5),col="white",border="white", names.arg=c(colnames(mm1)),las=1)
+mtext("MCMC 95% credible interval",side=1,line=3)
+mtext("predictor",side=2,line=9)
+arrows(m1.quantiles[1,],ddd,m1.quantiles[3,],ddd,code=3,angle=90,length=0.1)
+points(m1.quantiles[2,],ddd,cex=1.8,pch=21,bg="black")
+lines(c(0,0),c(0,20),lty=2,lwd=2)
+par(oldpar)
+```
+
+**Health Warning**: I first tried to perform this model using `logit(p[i]) <- beta[1]*x[i,1] + beta[2]*x[i,2] + beta[3]*x[i,3] +  beta[4]*x[i,4] + beta[5]*x[i,5]` but it crashed my computer. It's handy, but doesn't always work, to put the link function on the left hand side.
+
+Anyway...the Bayesian credible intervals confirm the findings of the frequentist and multi-model inference approaches. Neither Occupation nor Wealth are important predictors of the existence of a Plen-an-Gwarry.
+
+Finally, we perform a convergence check on the MCMC model.
+
+```{r warning=FALSE, message=FALSE,cache=T}
+traceplot(m1.MCMC)
+```
